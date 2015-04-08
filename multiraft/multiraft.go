@@ -676,10 +676,11 @@ func (s *state) handleRaftReady(readyGroups map[uint64]raft.Ready) {
 				Term:    g.committedTerm,
 			})
 
-			// Re-submit all pending proposals
+			// Abort all pending proposals.
 			for _, prop := range g.pending {
-				s.proposalChan <- prop
+				prop.ch <- util.Errorf("aborted due to term change")
 			}
+			g.pending = map[string]*proposal{}
 		}
 	}
 }
@@ -768,32 +769,18 @@ func (s *state) handleWriteResponse(response *writeResponse, readyGroups map[uin
 								s.multiNode.ApplyConfChange(groupID,
 									raftpb.ConfChange{})
 							}
-
-							// Re-submit all pending proposals, in case any of them were config changes
-							// that were dropped due to the one-at-a-time rule. This is a little
-							// redundant since most pending proposals won't benefit from this but
-							// config changes should be rare enough (and the size of the pending queue
-							// small enough) that it doesn't really matter.
-							for _, prop := range g.pending {
-								s.proposalChan <- prop
-							}
 						}
 					},
 				})
 			}
 			if p, ok := g.pending[commandID]; ok {
 				// TODO(bdarnell): the command is now committed, but not applied until the
-				// application consumes EventCommandCommitted. Is closing the channel
+				// application consumes EventCommandCommitted. Is returning nil
 				// at this point useful or do we need to wait for the command to be
 				// applied too?
 				// This could be done with a Callback as in EventMembershipChangeCommitted
 				// or perhaps we should move away from a channel to a callback-based system.
-				if p.ch != nil {
-					// Because of the way we re-queue proposals during leadership
-					// changes, we may close the same proposal object twice.
-					close(p.ch)
-					p.ch = nil
-				}
+				p.ch <- nil
 				delete(g.pending, commandID)
 			}
 		}
@@ -801,6 +788,9 @@ func (s *state) handleWriteResponse(response *writeResponse, readyGroups map[uin
 		noMoreHeartbeats := make(map[uint64]struct{})
 		for _, msg := range ready.Messages {
 			switch msg.Type {
+			case raftpb.MsgProp:
+				log.V(7).Infof("node %v dropped forwarded proposal to node %v", s.nodeID, msg.To)
+				continue
 			case raftpb.MsgHeartbeat:
 				log.V(7).Infof("node %v dropped individual heartbeat to node %v",
 					s.nodeID, msg.To)
