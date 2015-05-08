@@ -49,7 +49,8 @@ type Storage interface {
 // but they are logically distinct and systems like etcd keep them separate).
 type StateMachine interface {
 	// AppliedIndex returns the last index which has been applied to the given group's
-	// state machine.
+	// state machine. Note that this may be called before any GroupStorage has been
+	// created for the group.
 	AppliedIndex(groupID proto.RaftID) (uint64, error)
 }
 

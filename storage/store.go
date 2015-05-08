@@ -71,7 +71,7 @@ var (
 	// TestStoreContext has some fields initialized with values relevant
 	// in tests.
 	TestStoreContext = StoreContext{
-		RaftTickInterval:           100 * time.Millisecond,
+		RaftTickInterval:           1000 * time.Millisecond,
 		RaftHeartbeatIntervalTicks: 1,
 		RaftElectionTimeoutTicks:   2,
 		ScanInterval:               10 * time.Minute,
@@ -269,6 +269,7 @@ type Store struct {
 	nodeDesc       *proto.NodeDescriptor
 	initComplete   sync.WaitGroup // Signaled by async init tasks
 
+	raftGroupMu  sync.Mutex
 	mu           sync.RWMutex            // Protects variables below...
 	ranges       map[proto.RaftID]*Range // Map of ranges by Raft ID
 	rangesByKey  *btree.BTree            // btree keyed by ranges end keys.
@@ -371,7 +372,7 @@ func NewStore(ctx StoreContext, eng engine.Engine, nodeDesc *proto.NodeDescripto
 	s._splitQueue = newSplitQueue(s.db, s.ctx.Gossip)
 	s.verifyQueue = newVerifyQueue(s.RangeCount)
 	s.replicateQueue = newReplicateQueue(s.ctx.Gossip, s.allocator(), s.ctx.Clock)
-	s.rangeGCQueue = newRangeGCQueue(s.db)
+	s.rangeGCQueue = newRangeGCQueue(s.db, s)
 	s.scanner.AddQueues(s.gcQueue, s.splitQueue(), s.verifyQueue, s.replicateQueue, s.rangeGCQueue)
 
 	return s
@@ -1426,6 +1427,42 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *proto.WriteI
 	return wiErr
 }
 
+func (s *Store) raftGroupCreated(raftID proto.RaftID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, ok := s.ranges[raftID]
+	if !ok {
+		// If the range doesnt exist, return an error. This is generally the result
+		// of a range that has been rebalanced away from this node.
+		return false, util.Errorf("range %d does not exist", raftID)
+	}
+	return r.raftGroupCreated, nil
+}
+
+func (s *Store) ensureRaftGroup(raftID proto.RaftID) error {
+	created, err := s.raftGroupCreated(raftID)
+	if err != nil {
+		return err
+	}
+	if created {
+		return nil
+	}
+
+	s.raftGroupMu.Lock()
+	defer s.raftGroupMu.Unlock()
+
+	created, err = s.raftGroupCreated(raftID)
+	if err != nil {
+		return err
+	}
+	if created {
+		return nil
+	}
+
+	return s.multiraft.CreateGroup(raftID)
+}
+
 // ProposeRaftCommand submits a command to raft. The command is processed
 // asynchronously and an error or nil will be written to the returned
 // channel when it is committed or aborted (but note that committed does
@@ -1435,8 +1472,8 @@ func (s *Store) ProposeRaftCommand(idKey cmdIDKey, cmd proto.InternalRaftCommand
 	if value == nil {
 		panic("proposed a nil command")
 	}
-	// Lazily create group. TODO(bdarnell): make this non-lazy
-	err := s.multiraft.CreateGroup(cmd.RaftID)
+
+	err := s.ensureRaftGroup(cmd.RaftID)
 	if err != nil {
 		ch := make(chan error, 1)
 		ch <- err
@@ -1553,6 +1590,7 @@ func (s *Store) GroupStorage(groupID proto.RaftID) multiraft.WriteableGroupStora
 		}
 		s.uninitRanges[r.Desc().RaftID] = r
 	}
+	r.raftGroupCreated = true
 	return r
 }
 
@@ -1560,11 +1598,12 @@ func (s *Store) GroupStorage(groupID proto.RaftID) multiraft.WriteableGroupStora
 func (s *Store) AppliedIndex(groupID proto.RaftID) (uint64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	r, ok := s.ranges[groupID]
-	if !ok {
-		return 0, util.Errorf("range %d not found", groupID)
+	if r, ok := s.ranges[groupID]; ok {
+		// The range exists so load the index from memory.
+		return atomic.LoadUint64(&r.appliedIndex), nil
 	}
-	return atomic.LoadUint64(&r.appliedIndex), nil
+	// The range is not active; try reading its last known state from disk.
+	return loadAppliedIndex(s.engine, groupID)
 }
 
 func raftEntryFormatter(data []byte) string {

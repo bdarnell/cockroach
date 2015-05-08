@@ -556,7 +556,7 @@ func TestProgressWithDownNode(t *testing.T) {
 
 	// Verify that the first increment propagates to all the engines.
 	verify := func(expected []int64) {
-		util.SucceedsWithin(t, time.Second, func() error {
+		util.SucceedsWithin(t, 3*time.Second, func() error {
 			values := []int64{}
 			for _, eng := range mtc.engines {
 				val, _, err := engine.MVCCGet(eng, proto.Key("a"), mtc.clock.Now(), true, nil)
@@ -606,25 +606,8 @@ func TestReplicateAddAndRemove(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		verify := func(expected []int64) {
-			util.SucceedsWithin(t, time.Second, func() error {
-				values := []int64{}
-				for _, eng := range mtc.engines {
-					val, _, err := engine.MVCCGet(eng, proto.Key("a"), mtc.clock.Now(), true, nil)
-					if err != nil {
-						return err
-					}
-					values = append(values, mustGetInteger(val))
-				}
-				if !reflect.DeepEqual(expected, values) {
-					return util.Errorf("expected %v, got %v", expected, values)
-				}
-				return nil
-			})
-		}
-
 		// The first increment is visible on all three replicas.
-		verify([]int64{5, 5, 0, 5})
+		mtc.waitForValues(proto.Key("a"), time.Second, []int64{5, 5, 0, 5})
 
 		// Stop a store and replace it.
 		mtc.stopStore(1)
@@ -635,14 +618,14 @@ func TestReplicateAddAndRemove(t *testing.T) {
 			mtc.unreplicateRange(raftID, 0, 1)
 			mtc.replicateRange(raftID, 0, 2)
 		}
-		verify([]int64{5, 5, 5, 5})
+		mtc.waitForValues(proto.Key("a"), time.Second, []int64{5, 5, 5, 5})
 
 		// Ensure that the rest of the group can make progress.
 		incArgs = incrementArgs([]byte("a"), 11, raftID, mtc.stores[0].StoreID())
 		if _, err := mtc.stores[0].ExecuteCmd(context.Background(), &incArgs); err != nil {
 			t.Fatal(err)
 		}
-		verify([]int64{16, 5, 16, 16})
+		mtc.waitForValues(proto.Key("a"), time.Second, []int64{16, 5, 16, 16})
 
 		// Bring the downed store back up (required for a clean shutdown).
 		mtc.restartStore(1)
@@ -653,11 +636,7 @@ func TestReplicateAddAndRemove(t *testing.T) {
 		if _, err := mtc.stores[0].ExecuteCmd(context.Background(), &incArgs); err != nil {
 			t.Fatal(err)
 		}
-		verify([]int64{39, 5, 39, 39})
-
-		// TODO(bdarnell): when we have GC of removed ranges, verify that
-		// the downed node removes the data from this range after coming
-		// back up.
+		mtc.waitForValues(proto.Key("a"), time.Second, []int64{39, 5, 39, 39})
 
 		// Wait out the leader lease and the unleased duration to make the range GC'able.
 		mtc.manualClock.Increment(int64(storage.DefaultLeaderLeaseDuration) +
@@ -665,7 +644,7 @@ func TestReplicateAddAndRemove(t *testing.T) {
 		mtc.stores[1].ForceRangeGCScan(t)
 
 		// The removed store no longer has any of the data from the range.
-		verify([]int64{39, 0, 39, 39})
+		mtc.waitForValues(proto.Key("a"), time.Second, []int64{39, 0, 39, 39})
 	}
 }
 
@@ -676,6 +655,7 @@ func TestRaftHeartbeats(t *testing.T) {
 
 	mtc := startMultiTestContext(t, 3)
 	defer mtc.Stop()
+
 	mtc.replicateRange(1, 0, 1, 2)
 
 	// Capture the initial term and state.
@@ -812,4 +792,80 @@ func TestRangeDescriptorSnapshotRace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// TestReplicateRogueRemovedNode ensures that a rogue removed node
+// (i.e. a node that has been removed from the range but doesn't know
+// it yet because it was down or partitioned away when it happened)
+// cannot cause other removed nodes to recreate their ranges.
+func TestReplicateRogueRemovedNode(t *testing.T) {
+	defer leaktest.AfterTest(t)
+
+	mtc := startMultiTestContext(t, 3)
+	defer mtc.Stop()
+
+	// First put the range on all three nodes.
+	raftID := proto.RaftID(1)
+	mtc.replicateRange(raftID, 0, 1, 2)
+
+	// Put some data in the range so we'll have something to test for.
+	incArgs := incrementArgs([]byte("a"), 5, raftID, mtc.stores[0].StoreID())
+	if _, err := mtc.stores[0].ExecuteCmd(context.Background(), &incArgs); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for all nodes to catch up.
+	mtc.waitForValues(proto.Key("a"), 3*time.Second, []int64{5, 5, 5})
+
+	// Stop node 2; while it is down remove the range from nodes 2 and 1.
+	mtc.stopStore(2)
+	mtc.unreplicateRange(raftID, 0, 2)
+	mtc.unreplicateRange(raftID, 0, 1)
+
+	// Make a write on node 0; this will not be replicated because 0 is the only node left.
+	incArgs = incrementArgs([]byte("a"), 11, raftID, mtc.stores[0].StoreID())
+	if _, err := mtc.stores[0].ExecuteCmd(context.Background(), &incArgs); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the range to be GC'd on node 1.
+	mtc.manualClock.Increment(int64(storage.DefaultLeaderLeaseDuration+
+		storage.RangeGCQueueUnleasedDuration) + 1)
+	mtc.stores[1].ForceRangeGCScan(t)
+
+	// Store 0 has two writes, 1 has erased everything, and 2 still has the first write.
+	mtc.waitForValues(proto.Key("a"), time.Second, []int64{16, 0, 5})
+
+	// Bring node 2 back up.
+	log.Infof("waking up node 2")
+	mtc.restartStore(2)
+
+	// Try to issue a command on node 2. It should not be able to commit
+	// (so we add it asynchronously).
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		rng, err := mtc.stores[2].GetRange(raftID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		incArgs := incrementArgs([]byte("a"), 23, raftID, mtc.stores[2].StoreID())
+		wg.Done()
+		log.Infof("adding cmd on node 2 (store %s)", mtc.stores[2].StoreID())
+		if _, err := rng.AddCmd(context.Background(), &incArgs); err == nil {
+			t.Fatal("expected error during shutdown")
+		}
+	}()
+	log.Infof("sleeping")
+	time.Sleep(time.Second)
+	wg.Wait()
+	log.Infof("wg done")
+	time.Sleep(time.Second)
+	log.Infof("checking values")
+	mtc.waitForValues(proto.Key("a"), time.Second, []int64{16, 0, 5})
+
+	log.Infof("gc on node 2")
+	mtc.stores[2].ForceRangeGCScan(t)
+	log.Infof("gc done")
+	time.Sleep(time.Second)
 }

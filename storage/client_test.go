@@ -26,6 +26,7 @@ client_*.go.
 package storage_test
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -40,6 +41,7 @@ import (
 	"github.com/cockroachdb/cockroach/testutils"
 	"github.com/cockroachdb/cockroach/util"
 	"github.com/cockroachdb/cockroach/util/hlc"
+	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/cockroachdb/cockroach/util/stop"
 )
 
@@ -298,6 +300,7 @@ func (m *multiTestContext) replicateRange(raftID proto.RaftID, sourceStoreIndex 
 	}
 
 	for _, dest := range dests {
+		log.Infof("replicating to %d", dest)
 		err = rng.ChangeReplicas(proto.ADD_REPLICA,
 			proto.Replica{
 				NodeID:  m.stores[dest].Ident.NodeID,
@@ -309,16 +312,18 @@ func (m *multiTestContext) replicateRange(raftID proto.RaftID, sourceStoreIndex 
 	}
 
 	// Wait for the replication to complete on all destination nodes.
-	util.SucceedsWithin(m.t, time.Second, func() error {
-		for _, dest := range dests {
+	for _, dest := range dests {
+		log.Infof("waiting for replication to %d", dest)
+		util.SucceedsWithin(m.t, 5*time.Second, func() error {
 			// Use LookupRange(keys) instead of GetRange(raftID) to ensure that the
 			// snaphost has been transferred and the descriptor initialized.
 			if m.stores[dest].LookupRange(rng.Desc().StartKey, nil) == nil {
 				return util.Errorf("range not found on store %d", dest)
 			}
-		}
-		return nil
-	})
+			return nil
+		})
+	}
+	log.Infof("done waiting for replication")
 }
 
 // unreplicateRange removes a replica of the range in the source store
@@ -341,6 +346,37 @@ func (m *multiTestContext) unreplicateRange(raftID proto.RaftID, source, dest in
 	// Removing a range doesn't have any immediately-visible side
 	// effects, (and the removed node may be stopped) so return as soon
 	// as the removal has committed on the leader.
+}
+
+// readIntFromEngines reads the current integer value at the given key
+// from all configured engines, filling in zeros when the value is not
+// found. Returns a slice of the same length as mtc.engines.
+func (m *multiTestContext) readIntFromEngines(key proto.Key) []int64 {
+	results := make([]int64, len(m.engines))
+	for i, eng := range m.engines {
+		val, _, err := engine.MVCCGet(eng, key, m.clock.Now(), true, nil)
+		if err == nil {
+			results[i], err = val.GetInteger()
+		}
+		if err != nil {
+			log.Errorf("error reading %s from engine %d", key, i)
+			results[i] = 0
+		}
+	}
+	return results
+}
+
+// waitForValues waits up to the given duration for the integer values
+// at the given key to match the expected slice (across all engines).
+// Fails the test if they do not match.
+func (m *multiTestContext) waitForValues(key proto.Key, d time.Duration, expected []int64) {
+	util.SucceedsWithinDepth(1, m.t, d, func() error {
+		actual := m.readIntFromEngines(key)
+		if !reflect.DeepEqual(expected, actual) {
+			return util.Errorf("expected %v, got %v", expected, actual)
+		}
+		return nil
+	})
 }
 
 // getArgs returns a GetRequest and GetResponse pair addressed to

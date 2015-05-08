@@ -218,6 +218,11 @@ func (s *state) fanoutHeartbeat(req *RaftMessageRequest) {
 	}
 	cnt := 0
 	for groupID := range originNode.groupIDs {
+		if _, ok := s.groups[groupID]; !ok {
+			// TODO(bdarnell): how can this happen?
+			continue
+		}
+
 		// If we don't think that the sending node is leading that group, don't
 		// propagate.
 		if s.groups[groupID].leader != fromID || fromID == s.nodeID {
@@ -510,6 +515,21 @@ func (s *state) start() {
 					// TODO(tschottdorf) still shouldn't hurt to move this part outside,
 					// but suddenly tests will start failing. Should investigate.
 					if _, ok := s.groups[req.GroupID]; !ok {
+						// We don't currently have a live copy of the group.
+						// Ask the StateMachine if we have any persisted remnants of an older version.
+						// Drop any messages from a peer who predates our removal of the range.
+						if s.StateMachine != nil {
+							idx, err := s.StateMachine.AppliedIndex(req.GroupID)
+							if err != nil {
+								log.Warningf("Error querying state of group %d: %s", req.GroupID, err)
+								break
+							}
+							if req.Message.Index < idx {
+								log.Infof("node %v: got stale message for unknown group %d; ignoring",
+									s.nodeID, req.GroupID)
+								break
+							}
+						}
 						log.Infof("node %v: got message for unknown group %d; creating it", s.nodeID, req.GroupID)
 						if err := s.createGroup(req.GroupID); err != nil {
 							log.Warningf("Error creating group %d: %s", req.GroupID, err)
@@ -564,7 +584,7 @@ func (s *state) start() {
 				}
 
 			case <-s.Ticker.Chan():
-				if log.V(8) {
+				if log.V(4) {
 					log.Infof("node %v: got tick", s.nodeID)
 				}
 				s.multiNode.Tick()
@@ -737,10 +757,12 @@ func (s *state) removeGroup(op *removeGroupOp, readyGroups map[uint64]raft.Ready
 		s.removePending(g, prop, ErrGroupDeleted)
 	}
 
+	log.Infof("removing group from multinode")
 	if err := s.multiNode.RemoveGroup(uint64(op.groupID)); err != nil {
 		op.ch <- err
 		return
 	}
+	log.Infof("removed group from multinode")
 	gs := s.Storage.GroupStorage(op.groupID)
 	_, cs, err := gs.InitialState()
 	if err != nil {

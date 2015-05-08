@@ -45,13 +45,15 @@ const (
 // ranges that have been rebalanced away from this store.
 type rangeGCQueue struct {
 	*baseQueue
-	db *client.DB
+	db    *client.DB
+	store *Store
 }
 
 // newRangeGCQueue returns a new instance of rangeGCQueue.
-func newRangeGCQueue(db *client.DB) *rangeGCQueue {
+func newRangeGCQueue(db *client.DB, store *Store) *rangeGCQueue {
 	q := &rangeGCQueue{
-		db: db,
+		db:    db,
+		store: store,
 	}
 	q.baseQueue = newBaseQueue("rangeGC", q, rangeGCQueueMaxSize)
 	return q
@@ -65,6 +67,7 @@ func (q *rangeGCQueue) needsLeaderLease() bool {
 // and if so at what priority. Currently all inactive ranges are
 // considered for possible GC at equal priority.
 func (q *rangeGCQueue) shouldQueue(now proto.Timestamp, rng *Range) (bool, float64) {
+	log.Infof("considering")
 	lease := rng.getLease()
 	if lease.Covers(now) {
 		// If anyone holds a non-expired lease and we know about it, we
@@ -73,6 +76,7 @@ func (q *rangeGCQueue) shouldQueue(now proto.Timestamp, rng *Range) (bool, float
 		// been removed), but leader leases are short enough that it
 		// doesn't hurt to wait for them to expire, and this gives us a
 		// cheap heuristic to avoid unnecessary queries.
+		log.Infof("someone has lease")
 		return false, 0
 	}
 
@@ -83,6 +87,7 @@ func (q *rangeGCQueue) shouldQueue(now proto.Timestamp, rng *Range) (bool, float
 // process performs a consistent lookup on the range descriptor to see if we are
 // still a member of the range.
 func (q *rangeGCQueue) process(now proto.Timestamp, rng *Range) error {
+	log.Infof("processing")
 	// Calls to InternalRangeLookup typically use inconsistent reads, but we
 	// want to do a consistent read here. This is important when we are
 	// considering one of the metadata ranges: we must not do an inconsistent
@@ -106,6 +111,7 @@ func (q *rangeGCQueue) process(now proto.Timestamp, rng *Range) error {
 		return util.Errorf("expected 1 range descriptor, got %d", len(reply.Ranges))
 	}
 	desc := reply.Ranges[0]
+	log.Infof("got descriptor %+v", desc)
 
 	currentMember := false
 	if me := rng.GetReplica(); me != nil {
@@ -117,20 +123,26 @@ func (q *rangeGCQueue) process(now proto.Timestamp, rng *Range) error {
 		}
 	}
 
+	q.store.raftGroupMu.Lock()
+	defer q.store.raftGroupMu.Unlock()
+
 	if !currentMember {
 		// We are no longer a member of this range; clean up our local data.
 		if log.V(1) {
 			log.Infof("destroying local data from range %d", rng.Desc().RaftID)
 		}
-		if err := rng.rm.RemoveRange(rng); err != nil {
+		log.Infof("removing range")
+		if err := q.store.RemoveRange(rng); err != nil {
 			return err
 		}
 		// TODO(bdarnell): update Destroy to leave tombstones for removed ranges (#768)
 		// TODO(bdarnell): add some sort of locking to prevent the range
 		// from being recreated while the underlying data is being destroyed.
+		log.Infof("destroying range")
 		if err := rng.Destroy(); err != nil {
 			return err
 		}
+		log.Infof("destroyed range")
 	} else if desc.RaftID != rng.Desc().RaftID {
 		// If we get a different raft ID back, then the range has been merged
 		// away. But currentMember is true, so we are still a member of the
@@ -139,7 +151,7 @@ func (q *rangeGCQueue) process(now proto.Timestamp, rng *Range) error {
 		if log.V(1) {
 			log.Infof("removing merged range %d", rng.Desc().RaftID)
 		}
-		if err := rng.rm.RemoveRange(rng); err != nil {
+		if err := q.store.RemoveRange(rng); err != nil {
 			return err
 		}
 

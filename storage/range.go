@@ -210,6 +210,9 @@ type Range struct {
 	llMu         sync.Mutex     // Synchronizes readers' requests for leader lease
 	respCache    *ResponseCache // Provides idempotence for retries
 
+	// raftGroupCreated is managed by the Store and protected by Store.mu.
+	raftGroupCreated bool
+
 	sync.RWMutex                 // Protects the following fields:
 	cmdQ         *CommandQueue   // Enforce at most one command is running per key(s)
 	tsCache      *TimestampCache // Most recent timestamps for keys / key ranges
@@ -233,11 +236,13 @@ func NewRange(desc *proto.RangeDescriptor, rm rangeManager) (*Range, error) {
 	}
 	atomic.StoreUint64(&r.lastIndex, lastIndex)
 
-	appliedIndex, err := r.loadAppliedIndex(r.rm.Engine())
-	if err != nil {
-		return nil, err
+	if r.isInitialized() {
+		appliedIndex, err := loadAppliedIndex(r.rm.Engine(), r.Desc().RaftID)
+		if err != nil {
+			return nil, err
+		}
+		atomic.StoreUint64(&r.appliedIndex, appliedIndex)
 	}
-	atomic.StoreUint64(&r.appliedIndex, appliedIndex)
 
 	lease, err := loadLeaderLease(r.rm.Engine(), desc.RaftID)
 	if err != nil {
@@ -272,6 +277,19 @@ func (r *Range) Destroy() error {
 	for ; iter.Valid(); iter.Next() {
 		_ = batch.Clear(iter.Key())
 	}
+
+	// Preserve the applied index key.
+	appliedIndexKey := keys.RaftAppliedIndexKey(r.Desc().RaftID)
+	val, _, err := engine.MVCCGet(r.rm.Engine(), appliedIndexKey, proto.ZeroTimestamp, true, nil)
+	if err != nil {
+		return err
+	}
+	//tombstoneKey := engine.RaftTombstoneKey(r.Desc().RaftID)
+	err = engine.MVCCPut(batch, nil, appliedIndexKey, proto.ZeroTimestamp, *val, nil)
+	if err != nil {
+		return err
+	}
+
 	return batch.Commit()
 }
 

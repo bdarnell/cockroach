@@ -78,6 +78,8 @@ var (
 	LocalRaftHardStateSuffix = proto.Key("rfth")
 	// LocalRaftAppliedIndexSuffix is the suffix for the raft applied index.
 	LocalRaftAppliedIndexSuffix = proto.Key("rfta")
+	// KeyLocalRaftTombstoneSuffix is the suffix for the raft tombstone.
+	KeyLocalRaftTombstoneSuffix = proto.Key("rftb")
 	// LocalRaftLogSuffix is the suffix for the raft log.
 	LocalRaftLogSuffix = proto.Key("rftl")
 	// LocalRaftTruncatedStateSuffix is the suffix for the RaftTruncatedState.

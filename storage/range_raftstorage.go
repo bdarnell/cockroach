@@ -168,14 +168,22 @@ func (r *Range) FirstIndex() (uint64, error) {
 }
 
 // loadAppliedIndex retrieves the applied index from the supplied engine.
-func (r *Range) loadAppliedIndex(eng engine.Engine) (uint64, error) {
-	var appliedIndex uint64
-	if r.isInitialized() {
-		appliedIndex = raftInitialLogIndex
-	} else {
-		appliedIndex = 0
+func loadAppliedIndex(eng engine.Engine, raftID proto.RaftID) (uint64, error) {
+	appliedIndex := uint64(raftInitialLogIndex)
+	v, _, err := engine.MVCCGet(eng, keys.RaftAppliedIndexKey(raftID),
+		proto.ZeroTimestamp, true, nil)
+	if err != nil {
+		return 0, err
 	}
-	v, _, err := engine.MVCCGet(eng, keys.RaftAppliedIndexKey(r.Desc().RaftID),
+	if v != nil {
+		_, appliedIndex = encoding.DecodeUint64(v.Bytes)
+	}
+	return appliedIndex, nil
+}
+
+func loadTombstone(eng engine.Engine, raftID proto.RaftID) (uint64, error) {
+	appliedIndex := uint64(0)
+	v, _, err := engine.MVCCGet(eng, keys.RaftTombstoneKey(raftID),
 		proto.ZeroTimestamp, true, nil)
 	if err != nil {
 		return 0, err
@@ -236,7 +244,7 @@ func (r *Range) Snapshot() (raftpb.Snapshot, error) {
 
 	// Read the range metadata from the snapshot instead of the members
 	// of the Range struct because they might be changed concurrently.
-	appliedIndex, err := r.loadAppliedIndex(snap)
+	appliedIndex, err := loadAppliedIndex(snap, r.Desc().RaftID)
 	if err != nil {
 		return raftpb.Snapshot{}, err
 	}

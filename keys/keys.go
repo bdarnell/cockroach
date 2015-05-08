@@ -177,6 +177,11 @@ func RaftLastIndexKey(raftID proto.RaftID) proto.Key {
 	return MakeRangeIDKey(raftID, LocalRaftLastIndexSuffix, proto.Key{})
 }
 
+// RaftTombstoneKey returns a system-local key for a raft tombstone.
+func RaftTombstoneKey(raftID proto.RaftID) proto.Key {
+	return MakeRangeIDKey(raftID, KeyLocalRaftTombstoneSuffix, proto.Key{})
+}
+
 // RangeStatsKey returns the key for accessing the MVCCStats struct
 // for the specified Raft ID.
 func RangeStatsKey(raftID proto.RaftID) proto.Key {
