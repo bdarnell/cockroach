@@ -20,19 +20,25 @@ package log
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/cockroachdb/clog"
+	"github.com/mgutz/ansi"
+	"golang.org/x/crypto/ssh/terminal"
 	"golang.org/x/net/context"
 )
 
 const timeFormat = "1/2 15:04:05.000" // m/d h:m:s.nanos
 
+var useColors = false
+
 func init() {
 	// TODO this should go to our logger. Currently this will log with
 	// clog (=glog) format.
 	clog.CopyStandardLogTo("INFO")
+	useColors = terminal.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // FatalOnPanic recovers from a panic and exits the process with a
@@ -49,6 +55,8 @@ func logKV(buf *bytes.Buffer, kvs ...[]interface{}) {
 	var i int
 	var s string
 	var kv []interface{}
+	buf.WriteString(ansi.ColorCode("red"))
+	defer buf.WriteString(ansi.ColorCode("reset"))
 	for kvi := range kvs {
 		kv = kvs[kvi]
 		l := len(kv)
