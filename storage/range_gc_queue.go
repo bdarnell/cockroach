@@ -102,10 +102,12 @@ func (q *rangeGCQueue) process(now proto.Timestamp, rng *Range) error {
 
 	currentMember := false
 	me := rng.GetReplica()
-	for _, rep := range desc.Replicas {
-		if rep.StoreID == me.StoreID {
-			currentMember = true
-			break
+	if me != nil {
+		for _, rep := range desc.Replicas {
+			if rep.StoreID == me.StoreID {
+				currentMember = true
+				break
+			}
 		}
 	}
 
