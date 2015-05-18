@@ -26,15 +26,15 @@ import (
 
 // InitFlags adds the logging flags on the supplied FlagSet.
 func InitFlags(pf *pflag.FlagSet) {
-	pf.BoolVar(&logging.toStderr, "logtostderr", true, "log to standard error instead of files")
-	pf.BoolVar(&logging.alsoToStderr, "alsologtostderr", false, "log to standard error as well as files")
-	pf.Var(&pflagValue{&logging.verbosity}, "verbosity", "log level for V logs")
+	pf.BoolVar(&logging.toStderr, "log-stderr", true, "log to standard error instead of files")
+	pf.BoolVar(&logging.alsoToStderr, "log-tee", false, "log to standard error as well as files")
+	pf.Var(&pflagValue{&logging.verbosity}, "log-verbosity", "log level for V logs")
 	// TODO(tschottdorf): decide if we need this; it specifies the log messages
 	// which should go to stderr, which is only relevant if neither log-stderr
 	// and log-tee are set.
 	// pf.Var(&pflagValue{&logging.stderrThreshold}, "log-threshold", "logs at or above this threshold go to stderr")
-	pf.Var(&pflagValue{&logging.vmodule}, "vmodule", "comma-separated list of file=N settings for file-filtered logging")
-	pf.Var(&pflagValue{&logging.traceLocation}, "log-backtrace-at", "when logging hits line file:N, emit a stack trace")
+	pf.Var(&pflagValue{&logging.vmodule}, "log-pattern", "comma-separated list of file=N settings for file-filtered logging")
+	pf.Var(&pflagValue{&logging.traceLocation}, "log-backtrace", "when logging hits line file:N, emit a stack trace")
 	logDir = pf.String("log-dir", "", "if non-empty, write log files in this directory") // in clog.go
 
 	pf.BoolVar(&humanLogging, "log-human", false, "log human-friendly output to stderr (slower)") // in log.go

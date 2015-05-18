@@ -206,22 +206,23 @@ func ExampleSplitMergeRanges() {
 	// node drained and shutdown: ok
 }
 
-func ExampleGlogFlags() {
+func ExampleLogFlags() {
 	c := newCLITest()
 
-	c.Run("kv --alsologtostderr=false scan")
-	c.Run("kv --log-backtrace-at=foo.go:1 scan")
+	c.Run("kv --log-tee=false scan")
+	c.Run("kv --log-backtrace=foo.go:1 scan")
 	c.Run("kv --log-dir='' scan")
-	c.Run("kv --logtostderr scan")
+	c.Run("kv --log-stderr scan")
+	// TODO(tschottdorf) see comment in util/log/flags.go.
 	// c.Run("kv --stderrthreshold=2 scan")
-	c.Run("kv --verbosity=0 scan")
-	c.Run("kv --vmodule=foo=1 scan")
+	c.Run("kv --log-verbosity=0 scan")
+	c.Run("kv --log-pattern=foo=1 scan")
 
 	// Output:
-	// kv --alsologtostderr=false scan
-	// kv --log-backtrace-at=foo.go:1 scan
+	// kv --log-tee=false scan
+	// kv --log-backtrace=foo.go:1 scan
 	// kv --log-dir='' scan
-	// kv --logtostderr scan
-	// kv --verbosity=0 scan
-	// kv --vmodule=foo=1 scan
+	// kv --log-stderr scan
+	// kv --log-verbosity=0 scan
+	// kv --log-pattern=foo=1 scan
 }
