@@ -22,9 +22,11 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/util/log"
+	"github.com/spf13/pflag"
 )
 
 // Tester is a proxy for e.g. testing.T which does not introduce a dependency
@@ -148,4 +150,33 @@ func SucceedsWithin(t Tester, duration time.Duration, fn func() error) {
 		total += wait
 	}
 	t.Fatalf("condition failed to evaluate within %s: %s", duration, lastErr)
+}
+
+// trimTestArgs iterates through os.Args[1:] and looks for the first flag that
+// does not match the pattern `\-test\..*`. It returns the subslice of those
+// values and (a copy of) the remaining values. Both returned slices contain
+// os.Args[0].
+func trimTestArgs() ([]string, []string) {
+	cutoff := 1
+	args := append([]string(nil), os.Args[0])
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "-test.") {
+			cutoff++
+			continue
+		}
+		args = append(args, arg)
+	}
+	return os.Args[:cutoff], args
+}
+
+// SetupTestingFlags sets up the logging flags, feeds those flags from
+// os.Args into it which don't belong to go tooling (`\-test\..*`), and
+// truncates os.Args accordingly.
+func SetupTestingFlags() {
+	log.InitFlags(pflag.CommandLine)
+	var ourArgs []string
+	os.Args, ourArgs = trimTestArgs()
+	if err := pflag.CommandLine.Parse(ourArgs); err != nil {
+		panic(err.Error())
+	}
 }
