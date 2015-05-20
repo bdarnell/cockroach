@@ -93,6 +93,7 @@ type multiTestContext struct {
 	storeContext *storage.StoreContext
 	manualClock  *hlc.ManualClock
 	clock        *hlc.Clock
+	rpcContext   *rpc.Context
 	gossip       *gossip.Gossip
 	transport    multiraft.Transport
 	db           *client.KV
@@ -126,9 +127,11 @@ func (m *multiTestContext) Start(t *testing.T, numStores int) {
 	if m.clock == nil {
 		m.clock = hlc.NewClock(m.manualClock.UnixNano)
 	}
+	if m.rpcContext == nil {
+		m.rpcContext = rpc.NewContext(m.clock, security.LoadInsecureTLSConfig(), nil)
+	}
 	if m.gossip == nil {
-		rpcContext := rpc.NewContext(m.clock, security.LoadInsecureTLSConfig(), nil)
-		m.gossip = gossip.New(rpcContext, gossip.TestInterval, gossip.TestBootstrap)
+		m.gossip = gossip.New(m.rpcContext, gossip.TestInterval, gossip.TestBootstrap)
 	}
 	if m.transport == nil {
 		m.transport = multiraft.NewLocalRPCTransport()

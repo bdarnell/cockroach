@@ -685,3 +685,43 @@ func TestRaftHeartbeats(t *testing.T) {
 		t.Errorf("while sleeping, term changed from %d to %d", initialTerm, status.Term)
 	}
 }
+
+// TestRestartClusterWithEmptyGossip verifies that we can resume from
+// on-disk state even when all nodes have been shut down and gossip is
+// rebuilt from scratch.
+//
+// TODO(bdarnell): find a better home for this than client_raft_test.go.
+// It's not really raft-related except that it needs the range to be
+// replicated (since one of the issues being tested has to do with the
+// leader lease on the first range).
+func TestRestartClusterWithEmptyGossip(t *testing.T) {
+	defer leaktest.AfterTest(t)
+
+	// Create a 3-node cluster and replicate the first range.
+	numStores := 3
+	mtc := startMultiTestContext(t, numStores)
+	defer mtc.Stop()
+	mtc.replicateRange(1, 0, 1, 2)
+
+	// Take down all the stores. While everything is down, reset the gossip instance.
+	log.Infof("stopping stores")
+	for i := 0; i < numStores; i++ {
+		mtc.stopStore(i)
+	}
+	log.Infof("resetting gossip")
+	mtc.gossip = gossip.New(mtc.rpcContext, gossip.TestInterval, gossip.TestBootstrap)
+
+	log.Infof("restarting stores")
+	// Now restart all the stores.
+	for i := 0; i < numStores; i++ {
+		mtc.restartStore(i)
+	}
+	log.Infof("all stores restarted")
+
+	// Try to operate on the store.
+	args, reply := incrementArgs([]byte("a"), 5, 1, mtc.stores[0].StoreID())
+	if err := mtc.stores[0].ExecuteCmd(context.Background(), client.Call{Args: args, Reply: reply}); err != nil {
+		t.Fatal(err)
+	}
+	log.Infof("increment complete")
+}
