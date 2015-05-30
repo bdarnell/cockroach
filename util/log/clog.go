@@ -778,8 +778,10 @@ func (l *loggingT) outputLogEntry(s severity, file string, line int, alsoToStder
 		}
 	}
 
+	data := encodeLogEntry(entry)
 	if l.toStderr {
-		_, _ = os.Stderr.Write(l.processForStderr(entry))
+		_, _ = os.Stderr.Write(data)
+		//_, _ = os.Stderr.Write(l.processForStderr(entry))
 	} else {
 		if alsoToStderr || l.alsoToStderr || s >= l.stderrThreshold.get() {
 			_, _ = os.Stderr.Write(l.processForStderr(entry))
@@ -826,14 +828,16 @@ func (l *loggingT) outputLogEntry(s severity, file string, line int, alsoToStder
 }
 
 func encodeLogEntry(entry *proto.LogEntry) []byte {
+	entryData, err := json.Marshal(entry)
 	// Marshal log entry.
-	entryData, err := gogoproto.Marshal(entry)
+	//	entryData, err := gogoproto.Marshal(entry)
 	if err != nil {
 		panic(fmt.Sprintf("unable to marshal log entry: %s", err))
 	}
+	return append(entryData, '\n')
 	// Encode the length of the data first, followed by the encoded data.
-	data := encoding.EncodeUint32([]byte(nil), uint32(len(entryData)))
-	return append(data, entryData...)
+	//data := encoding.EncodeUint32([]byte(nil), uint32(len(entryData)))
+	//return append(data, entryData...)
 }
 
 // processForStderr formats a log entry for output to standard error.
