@@ -470,10 +470,15 @@ func (s *state) start() {
 			// writeReady is set to the write task's ready channel, which
 			// receives when the write task is prepared to persist ready data
 			// from the Raft state machine.
-			// The writeReady mechanism is currently disabled as we are testing
-			// performing all writes synchronously.
-			// TODO(bdarnell): either reinstate writeReady or rip it out completely.
-			//var writeReady chan struct{}
+			var writeReady chan struct{}
+			// ticker is the time channel, which is selected only when we
+			// are also selecting on raftReady (i.e. raft time does not
+			// advance while a ready group is being processed, as if it were
+			// processed synchronously in the select loop. We cannot
+			// actually process the writes synchronously because we must
+			// communicate with the application (especially callbackChan) to
+			// avoid deadlocks).
+			var ticker <-chan time.Time
 
 			// The order of operations in this loop structure is as follows:
 			// start by setting raftReady to the multiNode's Ready()
@@ -483,9 +488,10 @@ func (s *state) start() {
 			// write-to-storage state machine to the next step: wait for the
 			// write task to be ready to persist the new data.
 			if readyGroups != nil {
-				//writeReady = s.writeTask.ready
+				writeReady = s.writeTask.ready
 			} else if writingGroups == nil {
 				raftReady = s.multiNode.Ready()
+				ticker = s.Ticker.Chan()
 			}
 
 			if log.V(8) {
@@ -546,25 +552,17 @@ func (s *state) start() {
 				// complete). All we do for now is log them.
 				s.logRaftReady(readyGroups)
 
-				select {
-				case s.writeTask.ready <- struct{}{}:
-				case <-s.stopper.ShouldStop():
-					return
-				}
+			case writeReady <- struct{}{}:
 				s.handleWriteReady(readyGroups)
 				writingGroups = readyGroups
 				readyGroups = nil
 
-				select {
-				case resp := <-s.writeTask.out:
-					s.handleWriteResponse(resp, writingGroups)
-					s.multiNode.Advance(writingGroups)
-					writingGroups = nil
-				case <-s.stopper.ShouldStop():
-					return
-				}
+			case resp := <-s.writeTask.out:
+				s.handleWriteResponse(resp, writingGroups)
+				s.multiNode.Advance(writingGroups)
+				writingGroups = nil
 
-			case <-s.Ticker.Chan():
+			case <-ticker:
 				if log.V(8) {
 					log.Infof("node %v: got tick", s.nodeID)
 				}
