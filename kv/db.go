@@ -50,16 +50,28 @@ func verifyRequest(args proto.Request) error {
 	return nil
 }
 
+var allPublicMethods = map[string]proto.Method{
+	proto.Get.String():            proto.Get,
+	proto.Put.String():            proto.Put,
+	proto.ConditionalPut.String(): proto.ConditionalPut,
+	proto.Increment.String():      proto.Increment,
+	proto.Delete.String():         proto.Delete,
+	proto.DeleteRange.String():    proto.DeleteRange,
+	proto.Scan.String():           proto.Scan,
+	proto.EndTransaction.String(): proto.EndTransaction,
+	proto.Batch.String():          proto.Batch,
+	proto.AdminSplit.String():     proto.AdminSplit,
+	proto.AdminMerge.String():     proto.AdminMerge,
+}
+
 // createArgsAndReply returns allocated request and response pairs
 // according to the specified method. Note that createArgsAndReply
 // only knows about public methods and explicitly returns nil for
 // internal methods. Do not change this behavior without also fixing
 // DBServer.ServeHTTP.
 func createArgsAndReply(method string) (proto.Request, proto.Response) {
-	if m, ok := proto.AllMethods[method]; ok {
+	if m, ok := allPublicMethods[method]; ok {
 		switch m {
-		case proto.Contains:
-			return &proto.ContainsRequest{}, &proto.ContainsResponse{}
 		case proto.Get:
 			return &proto.GetRequest{}, &proto.GetResponse{}
 		case proto.Put:
@@ -159,68 +171,52 @@ func (s *DBServer) RegisterRPC(rpcServer *rpc.Server) error {
 // registration.
 type rpcDBServer DBServer
 
-// executeCmd creates a client.Call struct and sends if via our local sender.
+// executeCmd creates a client.Call struct and sends it via our local sender.
 func (s *rpcDBServer) executeCmd(args proto.Request, reply proto.Response) error {
 	s.sender.Send(context.TODO(), client.Call{Args: args, Reply: reply})
 	return nil
 }
 
-// Contains .
-func (s *rpcDBServer) Contains(args *proto.ContainsRequest, reply *proto.ContainsResponse) error {
-	return s.executeCmd(args, reply)
-}
-
-// Get .
 func (s *rpcDBServer) Get(args *proto.GetRequest, reply *proto.GetResponse) error {
 	return s.executeCmd(args, reply)
 }
 
-// Put .
 func (s *rpcDBServer) Put(args *proto.PutRequest, reply *proto.PutResponse) error {
 	return s.executeCmd(args, reply)
 }
 
-// ConditionalPut .
 func (s *rpcDBServer) ConditionalPut(args *proto.ConditionalPutRequest, reply *proto.ConditionalPutResponse) error {
 	return s.executeCmd(args, reply)
 }
 
-// Increment .
 func (s *rpcDBServer) Increment(args *proto.IncrementRequest, reply *proto.IncrementResponse) error {
 	return s.executeCmd(args, reply)
 }
 
-// Delete .
 func (s *rpcDBServer) Delete(args *proto.DeleteRequest, reply *proto.DeleteResponse) error {
 	return s.executeCmd(args, reply)
 }
 
-// DeleteRange .
 func (s *rpcDBServer) DeleteRange(args *proto.DeleteRangeRequest, reply *proto.DeleteRangeResponse) error {
 	return s.executeCmd(args, reply)
 }
 
-// Scan .
 func (s *rpcDBServer) Scan(args *proto.ScanRequest, reply *proto.ScanResponse) error {
 	return s.executeCmd(args, reply)
 }
 
-// EndTransaction .
 func (s *rpcDBServer) EndTransaction(args *proto.EndTransactionRequest, reply *proto.EndTransactionResponse) error {
 	return s.executeCmd(args, reply)
 }
 
-// Batch .
 func (s *rpcDBServer) Batch(args *proto.BatchRequest, reply *proto.BatchResponse) error {
 	return s.executeCmd(args, reply)
 }
 
-// AdminSplit .
 func (s *rpcDBServer) AdminSplit(args *proto.AdminSplitRequest, reply *proto.AdminSplitResponse) error {
 	return s.executeCmd(args, reply)
 }
 
-// AdminMerge .
 func (s *rpcDBServer) AdminMerge(args *proto.AdminMergeRequest, reply *proto.AdminMergeResponse) error {
 	return s.executeCmd(args, reply)
 }

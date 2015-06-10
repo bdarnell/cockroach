@@ -27,6 +27,7 @@ import (
 	"sync"
 
 	"github.com/cockroachdb/cockroach/rpc/codec"
+	"github.com/cockroachdb/cockroach/security"
 	"github.com/cockroachdb/cockroach/util"
 	"github.com/cockroachdb/cockroach/util/log"
 )
@@ -79,6 +80,7 @@ var connected = "200 Connected to Go RPC"
 
 // ServeHTTP implements an http.Handler that answers RPC requests.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	security.LogRequestCertificates(r)
 	if r.URL.Path != rpc.DefaultRPCPath {
 		if s.handler != nil {
 			s.handler.ServeHTTP(w, r)
@@ -131,10 +133,9 @@ func (s *Server) Serve(handler http.Handler) {
 
 	go func() {
 		if err := http.Serve(s.listener, s); err != nil {
-			if strings.HasSuffix(err.Error(), "use of closed network connection") {
-				return
+			if !strings.HasSuffix(err.Error(), "use of closed network connection") {
+				log.Fatal(err)
 			}
-			log.Fatal(err)
 		}
 	}()
 }

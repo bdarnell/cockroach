@@ -319,6 +319,13 @@ func (t *Timestamp) Backward(s Timestamp) {
 	}
 }
 
+// GoTime converts the timestamp to a time.Time.
+func (t *Timestamp) GoTime() time.Time {
+	sec := t.WallTime / 1e9
+	nsec := t.WallTime % 1e9
+	return time.Unix(sec, nsec)
+}
+
 // InitChecksum initializes a checksum based on the provided key and
 // the contents of the value. If the value contains a byte slice, the
 // checksum includes it directly; if the value contains an integer,
@@ -523,6 +530,11 @@ func (t Transaction) String() string {
 	}
 	return fmt.Sprintf("id=%s key=%s pri=%.8f iso=%s stat=%s epo=%d ts=%s orig=%s max=%s",
 		util.UUID(t.ID).Short(), t.Key, floatPri, t.Isolation, t.Status, t.Epoch, t.Timestamp, t.OrigTimestamp, t.MaxTimestamp)
+}
+
+// Short returns the short form of the Transaction's UUID.
+func (t Transaction) Short() string {
+	return util.UUID(t.ID).Short()
 }
 
 // IsInline returns true if the value is inlined in the metadata.

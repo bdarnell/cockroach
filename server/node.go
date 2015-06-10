@@ -20,9 +20,7 @@ package server
 import (
 	"container/list"
 	"net"
-	"runtime"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/net/context"
@@ -260,7 +258,6 @@ func (n *Node) start(rpcServer *rpc.Server, engines []engine.Engine,
 	n.startedAt = n.ctx.Clock.Now().WallTime
 	n.startStoresScanner(stopper)
 	n.startGossip(stopper)
-	n.startRuntimeStats(stopper)
 	log.Infof("Started node with %v engine(s) and attributes %v", engines, attrs.Attrs)
 	return nil
 }
@@ -526,55 +523,7 @@ func (n *Node) waitForScanCompletion() int64 {
 	return n.scanCount
 }
 
-// startRuntimeStats periodically outputs runtime statistics to the log files.
-// TODO(mtracy|bram) store these runtime stats into time series.
-func (n *Node) startRuntimeStats(stopper *util.Stopper) {
-	stopper.RunWorker(func() {
-		ticker := time.NewTicker(runtimeStatsInterval)
-		defer ticker.Stop()
-		var cgoCall, uTime, sTime int64
-		var pauseNS uint64
-		var numGC uint32
-		ms := runtime.MemStats{}
-		for {
-			tStart := time.Now()
-			select {
-			case <-stopper.ShouldStop():
-				return
-			case <-ticker.C:
-				dur := float64(time.Since(tStart))
-				runtime.ReadMemStats(&ms)
-				curCgoCall := runtime.NumCgoCall()
-				cgoRate := float64((curCgoCall-cgoCall)*int64(time.Second)) / dur
-
-				activeMB := float64(ms.Alloc) / mb
-
-				dPauseNS := ms.PauseTotalNs - pauseNS
-				dNumGC := ms.NumGC - numGC
-
-				ru := syscall.Rusage{}
-				if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
-					log.Errorf("Getrusage failed: %v", err)
-				}
-				newUtime := ru.Utime.Nano()
-				newStime := ru.Stime.Nano()
-				uPerc := float64(newUtime-uTime) / dur
-				sPerc := float64(newStime-sTime) / dur
-
-				log.Infof("runtime stats: %d tasks, %d goroutines, %.2fMB active, "+
-					"%.2fcgo/sec, %.2f/%.2f %%(u/s)time, %.2f %%gc (%dx)",
-					stopper.NumTasks(), runtime.NumGoroutine(), activeMB, cgoRate,
-					uPerc, sPerc, float64(dPauseNS)/dur, dNumGC)
-
-				uTime, sTime = newUtime, newStime
-				cgoCall = curCgoCall
-				pauseNS, numGC = ms.PauseTotalNs, ms.NumGC
-			}
-		}
-	})
-}
-
-// executeCmd creates a client.Call struct and sends if via our local sender.
+// executeCmd creates a client.Call struct and sends it via our local sender.
 func (n *nodeServer) executeCmd(args proto.Request, reply proto.Response) error {
 	// TODO(tschottdorf) get a hold on the client's ip and add it to the
 	// context before dispatching.
@@ -583,104 +532,78 @@ func (n *nodeServer) executeCmd(args proto.Request, reply proto.Response) error 
 	return nil
 }
 
-// TODO(spencer): fill in method comments below.
-
-// Contains .
-func (n *nodeServer) Contains(args *proto.ContainsRequest, reply *proto.ContainsResponse) error {
-	return n.executeCmd(args, reply)
-}
-
-// Get .
 func (n *nodeServer) Get(args *proto.GetRequest, reply *proto.GetResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// Put .
 func (n *nodeServer) Put(args *proto.PutRequest, reply *proto.PutResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// ConditionalPut .
 func (n *nodeServer) ConditionalPut(args *proto.ConditionalPutRequest, reply *proto.ConditionalPutResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// Increment .
 func (n *nodeServer) Increment(args *proto.IncrementRequest, reply *proto.IncrementResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// Delete .
 func (n *nodeServer) Delete(args *proto.DeleteRequest, reply *proto.DeleteResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// DeleteRange .
 func (n *nodeServer) DeleteRange(args *proto.DeleteRangeRequest, reply *proto.DeleteRangeResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// Scan .
 func (n *nodeServer) Scan(args *proto.ScanRequest, reply *proto.ScanResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// EndTransaction .
 func (n *nodeServer) EndTransaction(args *proto.EndTransactionRequest, reply *proto.EndTransactionResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// AdminSplit .
 func (n *nodeServer) AdminSplit(args *proto.AdminSplitRequest, reply *proto.AdminSplitResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// AdminMerge .
 func (n *nodeServer) AdminMerge(args *proto.AdminMergeRequest, reply *proto.AdminMergeResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// InternalRangeLookup .
 func (n *nodeServer) InternalRangeLookup(args *proto.InternalRangeLookupRequest, reply *proto.InternalRangeLookupResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// InternalHeartbeatTxn .
 func (n *nodeServer) InternalHeartbeatTxn(args *proto.InternalHeartbeatTxnRequest, reply *proto.InternalHeartbeatTxnResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// InternalGC .
 func (n *nodeServer) InternalGC(args *proto.InternalGCRequest, reply *proto.InternalGCResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// InternalPushTxn .
 func (n *nodeServer) InternalPushTxn(args *proto.InternalPushTxnRequest, reply *proto.InternalPushTxnResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// InternalResolveIntent .
 func (n *nodeServer) InternalResolveIntent(args *proto.InternalResolveIntentRequest, reply *proto.InternalResolveIntentResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// InternalResolveIntentRange .
 func (n *nodeServer) InternalResolveIntentRange(args *proto.InternalResolveIntentRangeRequest, reply *proto.InternalResolveIntentRangeResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// InternalMerge .
 func (n *nodeServer) InternalMerge(args *proto.InternalMergeRequest, reply *proto.InternalMergeResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// InternalTruncateLog .
 func (n *nodeServer) InternalTruncateLog(args *proto.InternalTruncateLogRequest, reply *proto.InternalTruncateLogResponse) error {
 	return n.executeCmd(args, reply)
 }
 
-// InternalLeaderLease .
 func (n *nodeServer) InternalLeaderLease(args *proto.InternalLeaderLeaseRequest,
 	reply *proto.InternalLeaderLeaseResponse) error {
 	return n.executeCmd(args, reply)

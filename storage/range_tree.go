@@ -64,14 +64,13 @@ func SetupRangeTree(batch engine.Engine, ms *proto.MVCCStats, timestamp proto.Ti
 }
 
 // flush writes all dirty nodes and the tree to the transaction.
-func (tc *treeContext) flush() error {
+func (tc *treeContext) flush(b *client.Batch) error {
 	if tc.dirty {
-		tc.txn.Prepare(client.PutProto(keys.RangeTreeRoot, tc.tree))
+		b.Put(keys.RangeTreeRoot, tc.tree)
 	}
 	for _, cachedNode := range tc.nodes {
 		if cachedNode.dirty {
-			call := client.PutProto(keys.RangeTreeNodeKey(cachedNode.node.Key), cachedNode.node)
-			tc.txn.Prepare(call)
+			b.Put(keys.RangeTreeNodeKey(cachedNode.node.Key), cachedNode.node)
 		}
 	}
 	return nil
@@ -80,7 +79,7 @@ func (tc *treeContext) flush() error {
 // GetRangeTree fetches the RangeTree proto and sets up the range tree context.
 func getRangeTree(txn *client.Txn) (*treeContext, error) {
 	tree := &proto.RangeTree{}
-	if err := txn.Run(client.GetProto(keys.RangeTreeRoot, tree)); err != nil {
+	if err := txn.GetProto(keys.RangeTreeRoot, tree); err != nil {
 		return nil, err
 	}
 	return &treeContext{
@@ -123,7 +122,7 @@ func (tc *treeContext) getNode(key *proto.Key) (*proto.RangeTreeNode, error) {
 
 	// We don't have it cached so fetch it and add it to the cache.
 	node := &proto.RangeTreeNode{}
-	if err := tc.txn.Run(client.GetProto(keys.RangeTreeNodeKey(*key), node)); err != nil {
+	if err := tc.txn.GetProto(keys.RangeTreeNodeKey(*key), node); err != nil {
 		return nil, err
 	}
 	tc.nodes[keyString] = cachedNode{
@@ -137,7 +136,7 @@ func (tc *treeContext) getNode(key *proto.Key) (*proto.RangeTreeNode, error) {
 // from operations that create new ranges, such as range.splitTrigger.
 // TODO(bram): Can we optimize this by inserting as a child of the range being
 // split?
-func InsertRange(txn *client.Txn, key proto.Key) error {
+func InsertRange(txn *client.Txn, b *client.Batch, key proto.Key) error {
 	tc, err := getRangeTree(txn)
 	if err != nil {
 		return err
@@ -159,7 +158,7 @@ func InsertRange(txn *client.Txn, key proto.Key) error {
 		// If the root has changed, update the tree to point to it.
 		tc.setRootKey(&root.Key)
 	}
-	return tc.flush()
+	return tc.flush(b)
 }
 
 // insert performs the insertion of a new range into the RangeTree. It will

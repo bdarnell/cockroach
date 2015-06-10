@@ -100,7 +100,7 @@ type baseQueue struct {
 	name       string
 	impl       queueImpl
 	maxSize    int                  // Maximum number of ranges to queue
-	incoming   chan *Range          // Channel for ranges to be queued
+	incoming   chan struct{}        // Channel signalled when a new range is added to the queue.
 	sync.Mutex                      // Mutex protects priorityQ and ranges
 	priorityQ  priorityQueue        // The priority queue
 	ranges     map[int64]*rangeItem // Map from RaftID to rangeItem (for updating priority)
@@ -109,7 +109,7 @@ type baseQueue struct {
 }
 
 // newBaseQueue returns a new instance of baseQueue with the
-// specified shouldQ function to determine which ranges to queue
+// specified shouldQueue function to determine which ranges to queue
 // and maxSize to limit the growth of the queue. Note that
 // maxSize doesn't prevent new ranges from being added, it just
 // limits the total size. Higher priority ranges can still be
@@ -119,7 +119,7 @@ func newBaseQueue(name string, impl queueImpl, maxSize int) *baseQueue {
 		name:     name,
 		impl:     impl,
 		maxSize:  maxSize,
-		incoming: make(chan *Range, 10),
+		incoming: make(chan struct{}, 1),
 		ranges:   map[int64]*rangeItem{},
 	}
 }
@@ -137,9 +137,9 @@ func (bq *baseQueue) Start(clock *hlc.Clock, stopper *util.Stopper) {
 	bq.processLoop(clock, stopper)
 }
 
-// MaybeAdd adds the specified range if bq.shouldQ specifies it should
+// MaybeAdd adds the specified range if bq.shouldQueue specifies it should
 // be queued. Ranges are added to the queue using the priority
-// returned by bq.shouldQ. If the queue is too full, an already-queued
+// returned by bq.shouldQueue. If the queue is too full, an already-queued
 // range with the lowest priority may be dropped.
 func (bq *baseQueue) MaybeAdd(rng *Range, now proto.Timestamp) {
 	bq.Lock()
@@ -174,7 +174,11 @@ func (bq *baseQueue) MaybeAdd(rng *Range, now proto.Timestamp) {
 		bq.remove(pqLen - 1)
 	}
 	// Signal the processLoop that a range has been added.
-	bq.incoming <- rng
+	select {
+	case bq.incoming <- struct{}{}:
+	default:
+		// No need to signal again.
+	}
 }
 
 // MaybeRemove removes the specified range from the queue if enqueued.
@@ -201,8 +205,8 @@ func (bq *baseQueue) processLoop(clock *hlc.Clock, stopper *util.Stopper) {
 
 		for {
 			select {
-			// Incoming ranges set the next time to process in the event that
-			// there were previously no ranges in the queue.
+			// Incoming signal sets the next time to process if there were previously
+			// no ranges in the queue.
 			case <-bq.incoming:
 				if nextTime == nil {
 					// When the first range is added, wake up immediately. This is

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -202,8 +203,8 @@ func ExampleTx_Commit() {
 	s, db := setup()
 	defer s.Stop()
 
-	err := db.Tx(func(tx *client.Tx) error {
-		return tx.Commit(tx.B.Put("aa", "1").Put("ab", "2"))
+	err := db.Txn(func(txn *client.Txn) error {
+		return txn.Commit(txn.B.Put("aa", "1").Put("ab", "2"))
 	})
 	if err != nil {
 		panic(err)
@@ -281,10 +282,63 @@ func TestDebugName(t *testing.T) {
 
 	_, file, _, _ := runtime.Caller(0)
 	base := filepath.Base(file)
-	_ = db.Tx(func(tx *client.Tx) error {
-		if !strings.HasPrefix(tx.DebugName(), base+":") {
-			t.Fatalf("expected \"%s\" to have the prefix \"%s:\"", tx.DebugName(), base)
+	_ = db.Txn(func(txn *client.Txn) error {
+		if !strings.HasPrefix(txn.DebugName(), base+":") {
+			t.Fatalf("expected \"%s\" to have the prefix \"%s:\"", txn.DebugName(), base)
 		}
 		return nil
 	})
+}
+
+func TestCommonMethods(t *testing.T) {
+	batchType := reflect.TypeOf(&client.Batch{})
+	batcherType := reflect.TypeOf(client.DB{}.B)
+	dbType := reflect.TypeOf(&client.DB{})
+	txnType := reflect.TypeOf(&client.Txn{})
+	types := []reflect.Type{batchType, batcherType, dbType, txnType}
+
+	type key struct {
+		typ    reflect.Type
+		method string
+	}
+	blacklist := map[key]struct{}{
+		key{batchType, "InternalAddCall"}:    {},
+		key{dbType, "AdminMerge"}:            {},
+		key{dbType, "AdminSplit"}:            {},
+		key{dbType, "Run"}:                   {},
+		key{dbType, "Txn"}:                   {},
+		key{txnType, "Commit"}:               {},
+		key{txnType, "DebugName"}:            {},
+		key{txnType, "InternalSetPriority"}:  {},
+		key{txnType, "Run"}:                  {},
+		key{txnType, "SetDebugName"}:         {},
+		key{txnType, "SetSnapshotIsolation"}: {},
+	}
+
+	for b := range blacklist {
+		if _, ok := b.typ.MethodByName(b.method); !ok {
+			t.Fatalf("blacklist method (%s).%s does not exist", b.typ, b.method)
+		}
+	}
+
+	for _, typ := range types {
+		for j := 0; j < typ.NumMethod(); j++ {
+			m := typ.Method(j)
+			if len(m.PkgPath) > 0 {
+				continue
+			}
+			if _, ok := blacklist[key{typ, m.Name}]; ok {
+				continue
+			}
+			for _, otherTyp := range types {
+				if typ == otherTyp {
+					continue
+				}
+				if _, ok := otherTyp.MethodByName(m.Name); !ok {
+					t.Errorf("(%s).%s does not exist, but (%s).%s does",
+						otherTyp, m.Name, typ, m.Name)
+				}
+			}
+		}
+	}
 }

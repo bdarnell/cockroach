@@ -50,7 +50,13 @@ func startStatusServer() (*httptest.Server, *util.Stopper) {
 		log.Fatal(err)
 	}
 	status := newStatusServer(db, nil)
-	httpServer := httptest.NewTLSServer(status.router)
+	httpServer := httptest.NewUnstartedServer(status.router)
+	tlsConfig, err := testContext.GetServerTLSConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+	httpServer.TLS = tlsConfig
+	httpServer.StartTLS()
 	stopper.AddCloser(httpServer)
 	return httpServer, stopper
 }
@@ -444,21 +450,20 @@ func TestMetricsRecording(t *testing.T) {
 	}
 	defer tsrv.Stop()
 
+	checkTimeSeriesKey := func(now int64, keyName string) error {
+		key := ts.MakeDataKey(keyName, "", ts.Resolution10s, now)
+		data := &proto.InternalTimeSeriesData{}
+		return tsrv.db.GetProto(key, data)
+	}
+
 	// Verify that metrics for the current timestamp are recorded. This should
 	// be true very quickly.
 	util.SucceedsWithin(t, time.Second, func() error {
 		now := tsrv.Clock().PhysicalNow()
-		key := ts.MakeDataKey("cr.store.livebytes.1", "", ts.Resolution10s, now)
-		gr, err := tsrv.db.Get(key)
-		if err != nil {
+		if err := checkTimeSeriesKey(now, "cr.store.livebytes.1"); err != nil {
 			return err
-		} else if !gr.Exists() {
-			return util.Errorf("key %s had nil value", key)
 		}
-
-		// The value should be an internal time series.
-		data := &proto.InternalTimeSeriesData{}
-		if err := gr.ValueProto(data); err != nil {
+		if err := checkTimeSeriesKey(now, "cr.node.sys.allocbytes.1"); err != nil {
 			return err
 		}
 		return nil

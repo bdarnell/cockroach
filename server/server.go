@@ -34,6 +34,7 @@ import (
 	"github.com/cockroachdb/cockroach/multiraft"
 	"github.com/cockroachdb/cockroach/resource"
 	"github.com/cockroachdb/cockroach/rpc"
+	"github.com/cockroachdb/cockroach/security"
 	"github.com/cockroachdb/cockroach/server/status"
 	"github.com/cockroachdb/cockroach/storage"
 	"github.com/cockroachdb/cockroach/structured"
@@ -175,6 +176,10 @@ func (s *Server) Start(selfBootstrap bool) error {
 	recorder := status.NewNodeStatusRecorder(s.node.status, s.clock)
 	s.tsDB.PollSource(recorder, s.ctx.MetricsFrequency, ts.Resolution10s, s.stopper)
 
+	// Begin recording runtime statistics.
+	runtime := status.NewRuntimeStatRecorder(s.node.Descriptor.NodeID, s.clock)
+	s.tsDB.PollSource(runtime, s.ctx.MetricsFrequency, ts.Resolution10s, s.stopper)
+
 	log.Infof("starting %s server at %s", s.ctx.RequestScheme(), s.rpc.Addr())
 	// TODO(spencer): go1.5 is supposed to allow shutdown of running http server.
 	s.initHTTP()
@@ -229,6 +234,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer gzw.Close()
 		w = gzw
 	}
+	security.LogRequestCertificates(r)
 	s.mux.ServeHTTP(w, r)
 }
 
