@@ -43,8 +43,15 @@ import (
 
 // Default constants for timeouts.
 const (
-	defaultSendNextTimeout = 500 * time.Millisecond
-	defaultRPCTimeout      = 5 * time.Second
+	// TODO(tschottdorf) These need some serious tuning and may have to be
+	// adapted on a per-request basis. For instance, under bad contention,
+	// currently transactions may well scratch the 10s mark, and a call
+	// erroring out for that reason is indistinguishable from one going to a
+	// disconnected server. For now, better to set these higher than they
+	// need to be, so that contention tests don't end up displaying pathological
+	// cache eviction behaviour; we can figure that out down the road.
+	defaultSendNextTimeout = 10 * time.Millisecond
+	defaultRPCTimeout      = 10 * time.Second
 	defaultClientTimeout   = 10 * time.Second
 	retryBackoff           = 250 * time.Millisecond
 	maxRetryBackoff        = 30 * time.Second
@@ -479,6 +486,14 @@ func (ds *DistSender) sendRPC(raftID proto.RaftID, replicas replicaSlice, order 
 // retry the send repeatedly (e.g. to continue processing after a critical node
 // becomes available after downtime or the range descriptor is refreshed via
 // lookup).
+// TODO(tschottdorf): redo cache invalidation & connection issue detection.
+// - keep the timestamp of last successful RPC to the server
+// - if individual calls time out, but others have managed to talk to the
+//   remote in the meantime, the error is likely per-call (for example, a
+//   slow transactional call) and doesn't need to invalidate anything
+// - for calls which need to address the leader (if we know who that is),
+//   we should pass only that replica to rpc.Send if we've recently communicated
+//   with the leader successfully.
 func (ds *DistSender) sendAttempt(desc *proto.RangeDescriptor, call client.Call) (retry.Status, error) {
 	leader := ds.leaderCache.Lookup(proto.RaftID(desc.RaftID))
 
@@ -520,7 +535,7 @@ func (ds *DistSender) sendAttempt(desc *proto.RangeDescriptor, call client.Call)
 
 	if err != nil {
 		if log.V(1) {
-			log.Warningf("failed to invoke %s: %s", call.Method(), err)
+			log.Warningf("failed to invoke %s [order=%s]: %s", call.Method(), order, err)
 		}
 
 		// If retryable, allow retry. For range not found or range
@@ -746,7 +761,7 @@ func (ds *DistSender) updateLeaderCache(rid proto.RaftID, leader proto.Replica) 
 	oldLeader := ds.leaderCache.Lookup(rid)
 	if leader.StoreID != oldLeader.StoreID {
 		if log.V(1) {
-			log.Infof("raft %d: new cached leader store %d (old: %d)", rid, leader.StoreID, oldLeader.StoreID)
+			log.Infof("range %d: new cached leader store %d (old: %d)", rid, leader.StoreID, oldLeader.StoreID)
 		}
 		ds.leaderCache.Update(rid, leader)
 	}

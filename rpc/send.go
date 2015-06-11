@@ -42,6 +42,16 @@ const (
 	OrderRandom
 )
 
+func (p OrderingPolicy) String() string {
+	switch p {
+	case OrderStable:
+		return "stable"
+	case OrderRandom:
+		return "random"
+	}
+	return "unknown"
+}
+
 // An Options structure describes the algorithm for sending RPCs to
 // one or more replicas, depending on error conditions and how many
 // successful responses are required.
