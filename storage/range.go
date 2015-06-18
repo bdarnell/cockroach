@@ -369,42 +369,42 @@ func (r *Range) requestLeaderLease(timestamp proto.Timestamp) error {
 func (r *Range) redirectOnOrAcquireLeaderLease(timestamp proto.Timestamp) error {
 	r.llMu.Lock()
 	defer r.llMu.Unlock()
-	// If lease is currently held by another, redirect to holder.
-	if held, expired := r.HasLeaderLease(timestamp); !held && !expired {
-		return r.newNotLeaderError()
-	} else if !held || expired {
-		// Otherwise, if not held by this replica or expired, request renewal.
-		err := r.requestLeaderLease(timestamp)
-		// Getting a LeaseRejectedError back means someone else got there
-		// first.
-		if _, ok := err.(*proto.LeaseRejectedError); ok {
-			if held, expired := r.HasLeaderLease(timestamp); !held && !expired {
-				return r.newNotLeaderError()
+
+	raftNodeID := r.rm.RaftNodeID()
+	maybeRequest := func(l *proto.Lease) error {
+		if l.Covers(timestamp) {
+			if l.OwnedBy(raftNodeID) {
+				return nil
 			}
+			// If lease is currently held by another, redirect to holder.
+			return r.newNotLeaderError()
 		}
-		return err
+		// Otherwise, no active lease: Request renewal.
+		return r.requestLeaderLease(timestamp)
+
 	}
-	return nil
+
+	lease := r.getLease()
+	err := maybeRequest(lease)
+
+	// Getting a LeaseRejectedError back means someone else got there first;
+	// we can redirect if they cover our timestamp. Note that it can't be us,
+	// since we're holding a lock here, and even if it were it would be a rare
+	// extra round-trip.
+	if _, ok := err.(*proto.LeaseRejectedError); ok {
+		if r.getLease().Covers(timestamp) {
+			return r.newNotLeaderError()
+		}
+	}
+	return err
 }
 
 // verifyLeaderLease checks whether the requesting replica (by raft node ID)
 // holds the leader lease covering the specified timestamp.
 func verifyLeaderLease(lease *proto.Lease, replicaRaftNodeID proto.RaftNodeID, timestamp proto.Timestamp) (bool, bool) {
-	if lease == nil || lease.RaftNodeID == 0 {
-		// The lease has never been held.
-		return false, true
-	}
-	held := lease.RaftNodeID == replicaRaftNodeID
-	expired := !timestamp.Less(lease.Expiration)
+	held := lease.OwnedBy(replicaRaftNodeID)
+	expired := !lease.Covers(timestamp)
 	return held, expired
-}
-
-// HasLeaderLease returns whether this replica holds or was the last
-// holder of the leader lease, and whether the lease has expired.
-// Leases may not overlap, and a gap between successive lease holders
-// is expected.
-func (r *Range) HasLeaderLease(timestamp proto.Timestamp) (bool, bool) {
-	return verifyLeaderLease(r.getLease(), r.rm.RaftNodeID(), timestamp)
 }
 
 // WaitForLeaderLease is used from unittests to wait until this range
@@ -770,7 +770,7 @@ func (r *Range) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto.I
 	r.Unlock()
 
 	args := raftCmd.Cmd.GetValue().(proto.Request)
-	origin := proto.RaftNodeID(raftCmd.OriginNodeID)
+	originNode := proto.RaftNodeID(raftCmd.OriginNodeID)
 	var reply proto.Response
 	var ctx context.Context
 	var err error
@@ -786,8 +786,9 @@ func (r *Range) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto.I
 
 	// Verify the leader lease is held; Note that we don't require the leader
 	// lease when trying to grant the leader lease!
-	held, expired := verifyLeaderLease(r.getLease(), origin, args.Header().Timestamp)
-	if (!held || expired) && args.Method() != proto.InternalLeaderLease {
+	lease := r.getLease()
+	if args.Method() != proto.InternalLeaderLease &&
+		(!lease.OwnedBy(originNode) || !lease.Covers(args.Header().Timestamp)) {
 		// This error case is somewhat special: Any command that makes it into
 		// Raft should have the leader lease held by the proposer. The only
 		// case that violates this assumption is that of the proposer having a
@@ -804,7 +805,7 @@ func (r *Range) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto.I
 		err = r.newNotLeaderError()
 	} else {
 		err = r.maybeSetCorrupt(
-			r.applyRaftCommand(ctx, index, origin, args, reply),
+			r.applyRaftCommand(ctx, index, originNode, args, reply),
 		)
 	}
 
