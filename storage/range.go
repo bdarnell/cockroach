@@ -770,10 +770,8 @@ func (r *Range) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto.I
 	r.Unlock()
 
 	args := raftCmd.Cmd.GetValue().(proto.Request)
-	originNode := proto.RaftNodeID(raftCmd.OriginNodeID)
 	var reply proto.Response
 	var ctx context.Context
-	var err error
 	if cmd != nil {
 		// We initiated this command, so use the caller-supplied reply.
 		reply = cmd.Reply
@@ -784,9 +782,12 @@ func (r *Range) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto.I
 		ctx = r.context()
 	}
 
+	var err error
 	// Verify the leader lease is held; Note that we don't require the leader
 	// lease when trying to grant the leader lease!
 	lease := r.getLease()
+	originNode := proto.RaftNodeID(raftCmd.OriginNodeID)
+	var intents []proto.Intent
 	if args.Method() != proto.InternalLeaderLease &&
 		(!lease.OwnedBy(originNode) || !lease.Covers(args.Header().Timestamp)) {
 		// This error case is somewhat special: Any command that makes it into
@@ -796,17 +797,20 @@ func (r *Range) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto.I
 		// the command should certainly not be executed by the replicas, but
 		// the error must not enter the response cache (which is updated in
 		// applyRaftCommand below) since it is going to be retried with exactly
-		// the same timestamp. On retry, it may be proposed by the real leader
-		// (or a later leader, which thereby assumes leadership over all past
-		// timestamps as well), for which the command should execute. If it did
-		// hit the response cache, the distributed sender would get stuck in an
-		// infinite loop, retrieving a stale NotLeaderError over and over
-		// again.
+		// the same ClientCmdID. On retry, it may be proposed by the real
+		// leader (or a later leader, which thereby assumes leadership over all
+		// past timestamps as well), for which the command should execute. If
+		// it did hit the response cache, the distributed sender would get
+		// stuck in an infinite loop, retrieving a stale NotLeaderError over
+		// and over again.
 		err = r.newNotLeaderError()
 	} else {
-		err = r.maybeSetCorrupt(
-			r.applyRaftCommand(ctx, index, originNode, args, reply),
-		)
+		// The main execution path. We call applyRaftCommand, which will return
+		// "expected" errors, but may also indicate replica corruption (as of
+		// now, signaled by a replicaCorruptionError). We feed that error
+		// through maybeSetCorrupt to act when that happens.
+		intents, err = r.applyRaftCommand(ctx, index, args, reply)
+		err = r.maybeSetCorrupt(err)
 	}
 
 	// TODO(tamird,tschottdorf): according to #1400 we intend to set the reply
@@ -819,6 +823,11 @@ func (r *Range) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto.I
 	reply.Header().SetGoError(err)
 
 	if cmd != nil {
+		// On success, resolve skipped intents asynchronously on the replica on
+		// which this command originated.
+		if err == nil {
+			r.handleSkippedIntents(args, intents)
+		}
 		cmd.done <- err
 	} else if err != nil && log.V(1) {
 		log.Errorc(r.context(), "error executing raft command %s: %s", args.Method(), err)
@@ -832,7 +841,7 @@ func (r *Range) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto.I
 // range lock.
 // When certain critical operations fail, a replicaCorruptionError may be
 // returned, and must be handled by the caller.
-func (r *Range) applyRaftCommand(ctx context.Context, index uint64, originNodeID proto.RaftNodeID, args proto.Request, reply proto.Response) (rErr error) {
+func (r *Range) applyRaftCommand(ctx context.Context, index uint64, args proto.Request, reply proto.Response) (_ []proto.Intent, rErr error) {
 	if index <= 0 {
 		log.Fatalc(ctx, "raft command index is <= 0")
 	}
@@ -845,9 +854,9 @@ func (r *Range) applyRaftCommand(ctx context.Context, index uint64, originNodeID
 			if log.V(1) {
 				log.Infoc(ctx, "found response cache entry for %+v", args.Header().CmdID)
 			}
-			return err
+			return nil, err
 		} else if ok && err != nil {
-			return newReplicaCorruptionError(
+			return nil, newReplicaCorruptionError(
 				util.Errorf("could not read from response cache"), err)
 		}
 	}
@@ -890,28 +899,28 @@ func (r *Range) applyRaftCommand(ctx context.Context, index uint64, originNodeID
 	intents, err := r.executeCmd(batch, &ms, args, reply)
 
 	if oldIndex := atomic.LoadUint64(&r.appliedIndex); oldIndex >= index {
-		return newReplicaCorruptionError(
+		return nil, newReplicaCorruptionError(
 			util.Errorf("applied index moved backwards: %d >= %d", oldIndex, index))
 	}
 
 	// Advance the applied index atomically within the batch.
 	if e := setAppliedIndex(batch, r.Desc().RaftID, index); e != nil {
-		return newReplicaCorruptionError(
+		return nil, newReplicaCorruptionError(
 			util.Errorf("could not update applied index", e))
 	}
 
 	// If the execution of the command wasn't successful, stop here.
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if proto.IsWrite(args) {
 		// On success, flush the MVCC stats to the batch and commit.
 		if err := r.stats.MergeMVCCStats(batch, &ms, header.Timestamp.WallTime); err != nil {
-			return newReplicaCorruptionError(util.Errorf("could not merge MVCC stats"), err)
+			return nil, newReplicaCorruptionError(util.Errorf("could not merge MVCC stats"), err)
 		}
 		if err := batch.Commit(); err != nil {
-			return newReplicaCorruptionError(util.Errorf("could not commit batch"), err)
+			return nil, newReplicaCorruptionError(util.Errorf("could not commit batch"), err)
 		}
 		committed = true
 		// Publish update to event feed.
@@ -932,13 +941,7 @@ func (r *Range) applyRaftCommand(ctx context.Context, index uint64, originNodeID
 		}
 	}
 
-	// Only resolve skipped intents asynchronously on the replica on which this
-	// command originated.
-	if originNodeID == r.rm.RaftNodeID() {
-		r.handleSkippedIntents(args, intents)
-	}
-
-	return nil
+	return intents, nil
 }
 
 // getLeaseForGossip tries to obtain a leader lease. Only one of the replicas
@@ -1050,10 +1053,11 @@ func (r *Range) maybeGossipConfigsLocked(match func(configPrefix proto.Key) bool
 }
 
 func (r *Range) handleSkippedIntents(args proto.Request, intents []proto.Intent) {
-	ctx := r.context()
 	if len(intents) == 0 {
 		return
 	}
+
+	ctx := r.context()
 	if stopper := r.rm.Stopper(); stopper.StartTask() {
 		go func() {
 			err := r.rm.resolveWriteIntentError(ctx, &proto.WriteIntentError{
