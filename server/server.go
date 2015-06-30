@@ -43,6 +43,7 @@ import (
 	"github.com/cockroachdb/cockroach/util"
 	"github.com/cockroachdb/cockroach/util/hlc"
 	"github.com/cockroachdb/cockroach/util/log"
+	"github.com/cockroachdb/cockroach/util/tracer"
 	assetfs "github.com/elazarl/go-bindata-assetfs"
 )
 
@@ -113,8 +114,11 @@ func NewServer(ctx *Context, stopper *util.Stopper) (*Server, error) {
 	s.stopper.AddCloser(s.rpc)
 	s.gossip = gossip.New(rpcContext, s.ctx.GossipInterval, s.ctx.GossipBootstrapResolvers)
 
+	feed := &util.Feed{}
+	tracer := tracer.NewTracer(feed, addr)
+
 	ds := kv.NewDistSender(&kv.DistSenderContext{Clock: s.clock}, s.gossip)
-	sender := kv.NewTxnCoordSender(ds, s.clock, ctx.Linearizable, s.stopper)
+	sender := kv.NewTxnCoordSender(ds, s.clock, ctx.Linearizable, tracer, s.stopper)
 	if s.db, err = client.Open("//root@", client.SenderOpt(sender)); err != nil {
 		return nil, err
 	}
@@ -143,7 +147,8 @@ func NewServer(ctx *Context, stopper *util.Stopper) (*Server, error) {
 		Transport:       s.raftTransport,
 		ScanInterval:    s.ctx.ScanInterval,
 		ScanMaxIdleTime: s.ctx.ScanMaxIdleTime,
-		EventFeed:       &util.Feed{},
+		EventFeed:       feed,
+		Tracer:          tracer,
 	}
 	s.node = NewNode(nCtx)
 	s.admin = newAdminServer(s.db, s.stopper)

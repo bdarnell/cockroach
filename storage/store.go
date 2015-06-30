@@ -36,6 +36,7 @@ import (
 	"github.com/cockroachdb/cockroach/util/hlc"
 	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/cockroachdb/cockroach/util/retry"
+	"github.com/cockroachdb/cockroach/util/tracer"
 	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
 	gogoproto "github.com/gogo/protobuf/proto"
@@ -313,6 +314,9 @@ type StoreContext struct {
 
 	// EventFeed is a feed to which this store will publish events.
 	EventFeed *util.Feed
+
+	// Tracer is a request tracer.
+	Tracer *tracer.Tracer
 }
 
 // Valid returns true if the StoreContext is populated correctly.
@@ -352,7 +356,7 @@ func NewStore(ctx StoreContext, eng engine.Engine, nodeDesc *proto.NodeDescripto
 
 	s := &Store{
 		ctx:          ctx,
-		db:           ctx.DB,
+		db:           ctx.DB, // TODO(tschottdorf) remove redundancy.
 		engine:       eng,
 		_allocator:   newAllocator(ctx.Gossip),
 		ranges:       map[proto.RaftID]*Range{},
@@ -976,6 +980,9 @@ func (s *Store) Stopper() *util.Stopper { return s.stopper }
 // EventFeed accessor.
 func (s *Store) EventFeed() StoreEventFeed { return s.feed }
 
+// Tracer accessor.
+func (s *Store) Tracer() *tracer.Tracer { return s.ctx.Tracer }
+
 // NewRangeDescriptor creates a new descriptor based on start and end
 // keys and the supplied proto.Replicas slice. It allocates new Raft
 // and range IDs to fill out the supplied replicas.
@@ -1207,6 +1214,7 @@ func (s *Store) Descriptor() (*proto.StoreDescriptor, error) {
 func (s *Store) ExecuteCmd(ctx context.Context, call proto.Call) error {
 	args, reply := call.Args, call.Reply
 	ctx = s.Context(ctx)
+	trace := tracer.FromCtx(ctx)
 	// If the request has a zero timestamp, initialize to this node's clock.
 	header := args.Header()
 	if err := verifyKeys(header.Key, header.EndKey, proto.IsRange(call.Args)); err != nil {
@@ -1233,8 +1241,16 @@ func (s *Store) ExecuteCmd(ctx context.Context, call proto.Call) error {
 		s.ctx.Clock.Update(header.Timestamp)
 	}
 
-	// Backoff and retry loop for handling errors.
-	for r := retry.Start(s.ctx.RangeRetryOptions); r.Next(); {
+	defer trace.Epoch("executing " + args.Method().String())()
+	// Backoff and retry loop for handling errors. Backoff times are measured
+	// in the Trace.
+	next := func(r *retry.Retry) bool {
+		if r.CurrentAttempt() > 0 {
+			defer trace.Epoch("backoff")()
+		}
+		return r.Next()
+	}
+	for r := retry.Start(s.ctx.RangeRetryOptions); next(&r); {
 		// Add the command to the range for execution; exit retry loop on success.
 		reply.Reset()
 
@@ -1260,12 +1276,14 @@ func (s *Store) ExecuteCmd(ctx context.Context, call proto.Call) error {
 			} else {
 				pushType = proto.PUSH_TIMESTAMP
 			}
+
 			err = s.resolveWriteIntentError(ctx, wiErr, rng, args, pushType)
 			reply.Header().SetGoError(err)
 		}
 
 		switch t := err.(type) {
 		case *proto.WriteTooOldError:
+			trace.Event(fmt.Sprintf("error: %T", err))
 			// Update request timestamp and retry immediately.
 			header.Timestamp = t.ExistingTimestamp.Next()
 			r.Reset()
@@ -1274,6 +1292,7 @@ func (s *Store) ExecuteCmd(ctx context.Context, call proto.Call) error {
 			}
 			continue
 		case *proto.WriteIntentError:
+			trace.Event(fmt.Sprintf("error: %T", err))
 			// If write intent error is resolved, exit retry/backoff loop to
 			// immediately retry.
 			if t.Resolved {
@@ -1318,6 +1337,8 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *proto.WriteI
 	if log.V(6) {
 		log.Infoc(ctx, "resolving write intent %s", wiErr)
 	}
+	trace := tracer.FromCtx(ctx)
+	defer trace.Epoch("intent resolution")()
 
 	// Attempt to push the transaction(s) which created the conflicting intent(s).
 	now := s.Clock().Now()
@@ -1383,6 +1404,7 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *proto.WriteI
 	var wg sync.WaitGroup
 
 	// We pushed the transaction(s) successfully, so resolve the intent(s).
+	trace.Event("resolving intents [async]")
 	for i, intent := range wiErr.Intents {
 		pushReply := bReply.Responses[i].InternalPushTxn
 		intentKey := intent.Key
@@ -1401,8 +1423,9 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *proto.WriteI
 
 		if s.stopper.StartTask() {
 			wg.Add(1)
+			ctx := tracer.ToCtx(ctx, trace.Fork())
 
-			go func() {
+			go func(ctx context.Context) {
 				resolveErr := rng.addWriteCmd(ctx, resolveArgs, resolveReply, &wg)
 				if resolveErr != nil {
 					if log.V(1) {
@@ -1410,7 +1433,7 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *proto.WriteI
 					}
 				}
 				s.stopper.FinishTask()
-			}()
+			}(ctx)
 		}
 	}
 
