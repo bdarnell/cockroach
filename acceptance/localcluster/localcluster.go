@@ -319,6 +319,7 @@ func (l *Cluster) startNode(i int) *Container {
 		"start",
 		"--stores=ssd=" + data(i),
 		"--certs=/certs",
+		"--verbosity=1",
 		"--addr=" + node(i) + ":8080",
 		"--gossip=" + strings.Join(gossipNodes, ","),
 		"--scan-max-idle-time=200ms", // set low to speed up tests

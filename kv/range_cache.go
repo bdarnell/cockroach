@@ -184,10 +184,9 @@ func (rdc *rangeDescriptorCache) EvictCachedRangeDescriptor(descKey proto.Key, s
 	}
 
 	for !bytes.Equal(descKey, proto.KeyMin) {
-		if log.V(2) {
+		if true /* HACK */ || log.V(2) {
 			log.Infof("evict cached descriptor: key=%s desc=%s\n%s", descKey, cachedDesc, rdc.stringLocked())
-		}
-		if log.V(1) {
+		} else if log.V(1) {
 			log.Infof("evict cached descriptor: key=%s desc=%s", descKey, cachedDesc)
 		}
 		rdc.rangeCache.Del(rngKey)

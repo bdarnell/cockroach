@@ -83,6 +83,7 @@ func (q *rangeGCQueue) shouldQueue(now proto.Timestamp, rng *Range) (bool, float
 // process performs a consistent lookup on the range descriptor to see if we are
 // still a member of the range.
 func (q *rangeGCQueue) process(now proto.Timestamp, rng *Range) error {
+	return nil // HACK(tschottdorf)
 	// Calls to InternalRangeLookup typically use inconsistent reads, but we
 	// want to do a consistent read here. This is important when we are
 	// considering one of the metadata ranges: we must not do an inconsistent

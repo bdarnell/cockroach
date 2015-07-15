@@ -189,7 +189,7 @@ func (tm *txnMetadata) close(trace *tracer.Trace, txn *proto.Transaction, resolv
 		// effort. We simply fire and forget, each in its own goroutine.
 		ctx := tracer.ToCtx(context.Background(), trace.Fork())
 		stopper.RunAsyncTask(func() {
-			if log.V(2) {
+			if log.V(2) || true /* HACK */ {
 				log.Infof("cleaning up intent %q for txn %s", call.Args.Header().Key, txn)
 			}
 			sender.Send(ctx, call)

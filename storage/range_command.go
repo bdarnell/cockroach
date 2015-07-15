@@ -250,6 +250,7 @@ func (r *Range) EndTransaction(batch engine.Engine, ms *engine.MVCCStats, args *
 		// retry error if the commit timestamp isn't equal to the txn
 		// timestamp.
 		if args.Txn.Isolation == proto.SERIALIZABLE && !reply.Txn.Timestamp.Equal(args.Txn.OrigTimestamp) {
+			log.Warningf("TOBIAS cannot commit, timestamp changed")
 			reply.SetGoError(proto.NewTransactionRetryError(reply.Txn))
 			return
 		}
@@ -363,6 +364,7 @@ func (r *Range) InternalRangeLookup(batch engine.Engine, args *proto.InternalRan
 		reply.SetGoError(err)
 		return nil
 	}
+	log.Warningf("TOBIAS kvs=%v, intents=%v", len(kvs), len(intents))
 	if args.IgnoreIntents && len(intents) > 0 {
 		// NOTE (subtle): in general, we want to try to clean up dangling
 		// intents on meta records. However, if we're in the process of
@@ -387,12 +389,14 @@ func (r *Range) InternalRangeLookup(batch engine.Engine, args *proto.InternalRan
 		if rand.Intn(2) == 0 {
 			key, txn := intents[0].Key, &intents[0].Txn
 			val, _, err := engine.MVCCGet(batch, key, txn.Timestamp, true, txn)
+			log.Warningf("TOBIAS using intent descriptor")
 			if err != nil {
 				reply.SetGoError(err)
 				return nil
 			}
 			kvs = []proto.KeyValue{{Key: key, Value: *val}}
 		}
+		log.Warningf("TOBIAS NOT using intent descriptor")
 	}
 
 	if len(kvs) == 0 {

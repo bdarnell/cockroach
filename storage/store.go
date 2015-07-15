@@ -53,9 +53,10 @@ const (
 	GCResponseCacheExpiration = 1 * time.Hour
 	// raftIDAllocCount is the number of Raft IDs to allocate per allocation.
 	raftIDAllocCount                = 10
-	defaultRaftTickInterval         = 100 * time.Millisecond
-	defaultHeartbeatIntervalTicks   = 3
-	defaultRaftElectionTimeoutTicks = 15
+	defaultRaftTickInterval         = 50 * time.Millisecond
+	defaultHeartbeatIntervalTicks   = 1
+	defaultRaftElectionTimeoutTicks = 3
+	defaultRaftCommandTimeout       = 5 * time.Second
 	// ttlCapacityGossip is time-to-live for capacity-related info.
 	ttlCapacityGossip = 2 * time.Minute
 )
@@ -75,6 +76,7 @@ var (
 		RaftTickInterval:           100 * time.Millisecond,
 		RaftHeartbeatIntervalTicks: 1,
 		RaftElectionTimeoutTicks:   2,
+		RaftCommandTimeout:         10 * time.Second,
 		ScanInterval:               10 * time.Minute,
 	}
 )
@@ -305,6 +307,9 @@ type StoreContext struct {
 	// for local networks.
 	RaftElectionTimeoutTicks int
 
+	// TODO(tschottdorf)
+	RaftCommandTimeout time.Duration
+
 	// ScanInterval is the default value for the scan interval
 	ScanInterval time.Duration
 
@@ -343,6 +348,9 @@ func (sc *StoreContext) setDefaults() {
 	}
 	if sc.RaftElectionTimeoutTicks == 0 {
 		sc.RaftElectionTimeoutTicks = defaultRaftElectionTimeoutTicks
+	}
+	if sc.RaftCommandTimeout == 0 {
+		sc.RaftCommandTimeout = defaultRaftCommandTimeout
 	}
 }
 
@@ -911,7 +919,7 @@ func (s *Store) BootstrapRange() error {
 			{},
 		},
 		RangeMinBytes: 1048576,
-		RangeMaxBytes: 67108864,
+		RangeMaxBytes: 20 * 1024, // 20kb
 		GC: &proto.GCPolicy{
 			TTLSeconds: 24 * 60 * 60, // 1 day
 		},
@@ -1005,6 +1013,7 @@ func (s *Store) NewRangeDescriptor(start, end proto.Key, replicas []proto.Replic
 // range. The new range is added to the ranges map and the rangesByKey
 // btree.
 func (s *Store) SplitRange(origRng, newRng *Range) error {
+	log.Infof("TOBIAS splitting %s -> %s", origRng, newRng)
 	if !bytes.Equal(origRng.Desc().EndKey, newRng.Desc().EndKey) ||
 		bytes.Compare(origRng.Desc().StartKey, newRng.Desc().StartKey) >= 0 {
 		return util.Errorf("orig range is not splittable by new range: %+v, %+v", origRng.Desc(), newRng.Desc())
@@ -1026,7 +1035,7 @@ func (s *Store) SplitRange(origRng, newRng *Range) error {
 		return util.Errorf("couldn't insert range %v in rangesByKey btree", origRng)
 	}
 	if err := s.addRangeInternal(newRng); err != nil {
-		return util.Errorf("couldn't insert range %v in rangesByKey btree", newRng)
+		return util.Errorf("couldn't insert range %v in rangesByKey btree: %s", newRng, err)
 	}
 
 	// Update the max bytes and other information of the new range.
@@ -1035,7 +1044,18 @@ func (s *Store) SplitRange(origRng, newRng *Range) error {
 	}
 
 	s.feed.splitRange(origRng, newRng)
+	str := s.printRanges()
+	log.Warningf("TOBIAS DUMP\n%s", str)
 	return s.processRangeDescriptorUpdateLocked(origRng)
+}
+
+func (s *Store) printRanges() string {
+	var buf bytes.Buffer
+	s.rangesByKey.Ascend(func(item btree.Item) bool {
+		buf.WriteString(item.(*Range).Desc().String() + "\n")
+		return true
+	})
+	return "===RANGES===\n" + buf.String() + "========="
 }
 
 // MergeRange expands the subsuming range to absorb the subsumed range.
@@ -1115,6 +1135,11 @@ func (s *Store) addRangeInternal(rng *Range) error {
 func (s *Store) addRangeToRangeMap(rng *Range) error {
 	if exRng, ok := s.ranges[rng.Desc().RaftID]; ok {
 		return &rangeAlreadyExists{exRng}
+	}
+	if desc := rng.Desc(); desc.RaftID > 2 {
+		if len(desc.EndKey) == 0 {
+			panic(desc)
+		}
 	}
 	s.ranges[rng.Desc().RaftID] = rng
 	return nil
@@ -1549,6 +1574,7 @@ func (s *Store) GroupStorage(groupID proto.RaftID) multiraft.WriteableGroupStora
 	defer s.mu.Unlock()
 	r, ok := s.ranges[groupID]
 	if !ok {
+		log.Warningf("TOBIAS new range via Raft")
 		var err error
 		r, err = NewRange(&proto.RangeDescriptor{
 			RaftID: groupID,

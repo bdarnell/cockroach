@@ -161,7 +161,7 @@ func (bq *baseQueue) MaybeAdd(rng *Range, now proto.Timestamp) {
 		return
 	}
 
-	if log.V(1) {
+	if false /* HACK */ && log.V(1) {
 		log.Infof("adding range %s to %s queue", rng, bq.name)
 	}
 	item = &rangeItem{value: rng, priority: priority}
@@ -243,7 +243,7 @@ func (bq *baseQueue) processOne(clock *hlc.Clock) {
 	bq.Unlock()
 	if rng != nil {
 		now := clock.Now()
-		if log.V(1) {
+		if false && log.V(1) { // HACK
 			log.Infof("processing range %s from %s queue...", rng, bq.name)
 		}
 		// If the queue requires the leader lease to process the
@@ -254,7 +254,7 @@ func (bq *baseQueue) processOne(clock *hlc.Clock) {
 			args := &proto.GetRequest{RequestHeader: proto.RequestHeader{Timestamp: now}}
 			if err := rng.redirectOnOrAcquireLeaderLease(nil /* Trace */, args.Header().Timestamp); err != nil {
 				if log.V(1) {
-					log.Infof("this replica of %s could not acquire leader lease; skipping...", rng)
+					log.Infof("this replica of %s could not acquire leader lease; skipping: %s", rng, err)
 				}
 				return
 			}

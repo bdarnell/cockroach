@@ -271,6 +271,7 @@ func (txn *Txn) exec(retryable func(txn *Txn) error) (err error) {
 	// error condition this loop isn't capable of handling.
 	for r := retry.Start(txn.db.txnRetryOptions); r.Next(); {
 		txn.haveTxnWrite, txn.haveEndTxn = false, false // always reset before [re]starting txn
+		log.Warningf("TOBIAS exec")
 		if err = retryable(txn); err == nil {
 			if !txn.haveEndTxn && txn.haveTxnWrite {
 				// If there were no errors running retryable, commit the txn. This
@@ -283,7 +284,7 @@ func (txn *Txn) exec(retryable func(txn *Txn) error) (err error) {
 			}
 		}
 		if restartErr, ok := err.(proto.TransactionRestartError); ok {
-			if log.V(2) {
+			if log.V(2) || true /* HACK */ {
 				log.Warning(err)
 			}
 			if restartErr.CanRestartTransaction() == proto.TransactionRestart_IMMEDIATE {

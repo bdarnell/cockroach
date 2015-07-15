@@ -37,11 +37,18 @@ option (gogoproto.unmarshaler_all) = true;
 message InternalRangeLookupRequest {
   optional RequestHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
   optional int32 max_ranges = 2 [(gogoproto.nullable) = false];
-  // Ignore intents indicates whether or not intents encountered
-  // while looking up the range info should be resolved. This should
-  // be false in general, except for the case where the lookup is
-  // already in service of pushing intents on meta records. Attempting
-  // to resolve intents in this case would lead to infinite recursion.
+  // This option determines how intents encountered while looking up the range
+  // info should be handled. Lookups should use false in general, except for
+  // the case where the lookup is already in service of pushing intents on meta
+  // records: A WriteIntentError in this case would lead to infinite recursion,
+  // as would always returning the last committed descriptor (for the intent
+  // may belong to a Transaction that has already comitted).
+  // Instead, the lookup will randomly return the descriptor found in either
+  // the last committed value or or the intent; either of the two may be the
+  // range that actually holds the transaction record, and returning the wrong
+  // one prompts an immediate retry.
+  // Attempting to use this option in a consistent lookup will result in an
+  // error.
   optional bool ignore_intents = 3 [(gogoproto.nullable) = false];
 }
 

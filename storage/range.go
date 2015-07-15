@@ -106,7 +106,7 @@ const (
 	raftInitialLogTerm  = 5
 
 	// DefaultLeaderLeaseDuration is the default duration of the leader lease.
-	DefaultLeaderLeaseDuration = time.Second
+	DefaultLeaderLeaseDuration = time.Hour // HACK(tschottdorf)
 )
 
 // configDescriptor describes administrative configuration maps
@@ -176,6 +176,7 @@ type rangeManager interface {
 	EventFeed() StoreEventFeed
 	Context(context.Context) context.Context
 	resolveWriteIntentError(context.Context, *proto.WriteIntentError, *Range, proto.Request, proto.PushTxnType) error
+	printRanges() string
 
 	// Range manipulation methods.
 	LookupRange(start, end proto.Key) *Range
@@ -375,6 +376,8 @@ func (r *Range) requestLeaderLease(timestamp proto.Timestamp) error {
 //  will not incur latency waiting for the command to complete.
 //  Reads, however, must wait.
 func (r *Range) redirectOnOrAcquireLeaderLease(trace *tracer.Trace, timestamp proto.Timestamp) error {
+	// The primary value in this Trace entry is to time the locking.
+	defer trace.Epoch("checking leader lease")()
 	r.llMu.Lock()
 	defer r.llMu.Unlock()
 
@@ -519,6 +522,10 @@ func (r *Range) AddCmd(ctx context.Context, call proto.Call) error {
 
 func (r *Range) checkCmdHeader(header *proto.RequestHeader) error {
 	if !r.ContainsKeyRange(header.Key, header.EndKey) {
+		if len(r.Desc().EndKey) == 0 {
+			log.Error(r.rm.printRanges())
+			panic("UNINIT \n\n" + r.Desc().String())
+		}
 		return proto.NewRangeKeyMismatchError(header.Key, header.EndKey, r.Desc())
 	}
 	return nil
@@ -1068,6 +1075,7 @@ func (r *Range) maybeGossipConfigsLocked(match func(configPrefix proto.Key) bool
 }
 
 func (r *Range) handleSkippedIntents(args proto.Request, intents []proto.Intent) {
+	return // HACK(tschottdorf)
 	if len(intents) == 0 {
 		return
 	}
