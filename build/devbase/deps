@@ -8,6 +8,7 @@ github.com/coreos/etcd/Godeps/_workspace/src/github.com/gogo/protobuf/proto
 github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context
 github.com/coreos/etcd/raft
 github.com/coreos/etcd/raft/raftpb
+github.com/davecgh/go-spew/spew
 github.com/docker/docker/pkg/units
 github.com/elazarl/go-bindata-assetfs
 github.com/gogo/protobuf/proto

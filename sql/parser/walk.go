@@ -26,6 +26,14 @@ type Visitor interface {
 	Visit(expr Expr) Expr
 }
 
+// A VisitorFunc implements the Visitor interface.
+type VisitorFunc func(Expr) Expr
+
+// Visit implements the Visitor interface.
+func (f VisitorFunc) Visit(expr Expr) Expr {
+	return f(expr)
+}
+
 // WalkExpr traverses the nodes in an expression. It starts by calling
 // v.Visit(expr). It then recursively traverses the children nodes of the
 // expression returned by v.Visit().
