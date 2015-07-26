@@ -1,0 +1,36 @@
+SELECT 00\"
+SELECT 0"0"
+data0: "SELECT 0 AS 0"
+panic: syntax error at or near "0"
+SELECT 0 AS 0
+            ^
+
+
+goroutine 1 [running]:
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.fuzzSingle(0x22083b6b78, 0x2083ea0a0, 0x2083ae560)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build629623786/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:72 +0x35f
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.Fuzz(0x2208565000, 0xb, 0x200000, 0x3)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build629623786/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:28 +0x4e4
+github.com/dvyukov/go-fuzz/go-fuzz-dep.Main(0x275988)
+	/Users/tschottdorf/go/src/github.com/dvyukov/go-fuzz/go-fuzz-dep/main.go:44 +0x13d
+main.main()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build629623786/src/go-fuzz-main/main.go:10 +0x2a
+
+goroutine 2 [runnable]:
+runtime.forcegchelper()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/proc.go:90
+runtime.goexit()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/asm_amd64.s:2232 +0x1
+
+goroutine 3 [runnable]:
+runtime.bgsweep()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/mgc0.go:82
+runtime.goexit()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/asm_amd64.s:2232 +0x1
+
+goroutine 4 [runnable]:
+runtime.runfinq()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/malloc.go:712
+runtime.goexit()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/asm_amd64.s:2232 +0x1
+exit status 2

@@ -1,0 +1,37 @@
+SELECT*,-
+--
+-5
+data0: "SELECT *, --5"
+panic: syntax error at or near "EOF"
+SELECT *, --5
+             ^
+
+
+goroutine 1 [running]:
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.fuzzSingle(0x2208386ba0, 0x2083b8000, 0x20837e290)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:67 +0x339
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.Fuzz(0x2208535000, 0xf, 0x200000, 0x2)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:29 +0x4c6
+github.com/dvyukov/go-fuzz/go-fuzz-dep.Main(0x247230)
+	/Users/tschottdorf/go/src/github.com/dvyukov/go-fuzz/go-fuzz-dep/main.go:44 +0x13d
+main.main()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/go-fuzz-main/main.go:10 +0x2a
+
+goroutine 2 [runnable]:
+runtime.forcegchelper()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/proc.go:90
+runtime.goexit()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/asm_amd64.s:2232 +0x1
+
+goroutine 3 [runnable]:
+runtime.bgsweep()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/mgc0.go:82
+runtime.goexit()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/asm_amd64.s:2232 +0x1
+
+goroutine 4 [runnable]:
+runtime.runfinq()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/malloc.go:712
+runtime.goexit()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/asm_amd64.s:2232 +0x1
+exit status 2

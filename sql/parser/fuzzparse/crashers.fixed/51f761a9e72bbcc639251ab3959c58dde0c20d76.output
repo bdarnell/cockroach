@@ -1,0 +1,49 @@
+UPDATE T","SET '
+UPDATE T","SET ''
+UPDATE T","SET K
+UPDATE T","SET K'
+UPDATE T","SET K=
+0PDATE T","SET K=''
+U0DATE T","SET K=''
+UP0ATE T","SET K=''
+UPD0TE T","SET K=''
+UPDA0E T","SET K=''
+UPDAT0 T","SET K=''
+UPDATE0T","SET K=''
+UPDATE 0","SET K=''
+UPDATE T0,"SET K=''
+UPDATE T"0"SET K=''
+data0: "UPDATE T AS 0 SET K = ''"
+panic: syntax error at or near "0"
+UPDATE T AS 0 SET K = ''
+            ^
+
+
+goroutine 1 [running]:
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.fuzzSingle(0x22083b6e38, 0x2083de390, 0x2083ae2f0)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build826970331/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:77 +0x35f
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.Fuzz(0x2208565000, 0x13, 0x200000, 0x3)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build826970331/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:28 +0x4a8
+github.com/dvyukov/go-fuzz/go-fuzz-dep.Main(0x2754c8)
+	/Users/tschottdorf/go/src/github.com/dvyukov/go-fuzz/go-fuzz-dep/main.go:44 +0x13d
+main.main()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build826970331/src/go-fuzz-main/main.go:10 +0x2a
+
+goroutine 2 [runnable]:
+runtime.forcegchelper()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build826970331/src/runtime/proc.go:90
+runtime.goexit()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build826970331/src/runtime/asm_amd64.s:2232 +0x1
+
+goroutine 3 [runnable]:
+runtime.bgsweep()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build826970331/src/runtime/mgc0.go:82
+runtime.goexit()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build826970331/src/runtime/asm_amd64.s:2232 +0x1
+
+goroutine 4 [runnable]:
+runtime.runfinq()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build826970331/src/runtime/malloc.go:712
+runtime.goexit()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build826970331/src/runtime/asm_amd64.s:2232 +0x1
+exit status 2

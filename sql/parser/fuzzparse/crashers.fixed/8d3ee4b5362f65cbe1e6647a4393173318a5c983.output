@@ -1,0 +1,16 @@
+SELECT(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(T(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(FF(F(F
+SELECT(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(T(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F((F(F
+panic: runtime error: index out of range
+
+goroutine 1 [running]:
+github.com/cockroachdb/cockroach/sql/parser.sqlParse(0x2208386ac0, 0x2083ba400, 0x0)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/yaccpar:207 +0x548df
+github.com/cockroachdb/cockroach/sql/parser.Parse(0x2083b1380, 0xcb, 0x0, 0x0, 0x0, 0x0, 0x0)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/parse.go:50 +0x16a
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.Fuzz(0x2208535000, 0xcb, 0x200000, 0x3)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:14 +0x18b
+github.com/dvyukov/go-fuzz/go-fuzz-dep.Main(0x247230)
+	/Users/tschottdorf/go/src/github.com/dvyukov/go-fuzz/go-fuzz-dep/main.go:44 +0x13d
+main.main()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/go-fuzz-main/main.go:10 +0x2a
+exit status 2

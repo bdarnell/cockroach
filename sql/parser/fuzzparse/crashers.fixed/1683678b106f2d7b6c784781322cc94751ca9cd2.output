@@ -1,0 +1,27 @@
+VALUES('
+
+	
+				
+\')
+data0: "VALUES (e'\\n\\n\\t\\n\\t\\t\\t\\t\\n\\')"
+panic: unterminated string
+VALUES (e'\n\n\t\n\t\t\t\t\n\')
+        ^
+
+
+goroutine 1 [running]:
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.fuzzSingle(0x22083b5b50, 0x2083c0060, 0x2083ac2c0)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build434771591/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:64 +0x35f
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.Fuzz(0x2208564000, 0x14, 0x200000, 0x2)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build434771591/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:28 +0x4e4
+github.com/dvyukov/go-fuzz/go-fuzz-dep.Main(0x275408)
+	/Users/tschottdorf/go/src/github.com/dvyukov/go-fuzz/go-fuzz-dep/main.go:44 +0x13d
+main.main()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build434771591/src/go-fuzz-main/main.go:10 +0x2a
+
+goroutine 4 [runnable]:
+runtime.runfinq()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/malloc.go:712
+runtime.goexit()
+	/usr/local/Cellar/go/1.4.2/libexec/src/runtime/asm_amd64.s:2232 +0x1
+exit status 2

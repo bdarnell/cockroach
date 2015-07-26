@@ -1,0 +1,26 @@
+SELECT-00,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0
+SELECT-0%,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0
+SELECT-0%00<0,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0<0,0
+panic: runtime error: integer divide by zero
+[signal 0x8 code=0x7 addr=0xea1c8 pc=0xea1c8]
+
+goroutine 1 [running]:
+github.com/cockroachdb/cockroach/sql/parser.func·020(0x22083871c8, 0x2083ac7f0, 0x22083871c8, 0x2083ac7f8, 0x0, 0x0, 0x0, 0x0)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/eval.go:234 +0xd8
+github.com/cockroachdb/cockroach/sql/parser.evalBinaryExpr(0x2083ae360, 0x22083871a0, 0x3321d8, 0x0, 0x0, 0x0, 0x0)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/eval.go:641 +0x4f9
+github.com/cockroachdb/cockroach/sql/parser.EvalExpr(0x2208387328, 0x2083ae360, 0x22083871a0, 0x3321d8, 0x0, 0x0, 0x0, 0x0)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/eval.go:430 +0x1ca4
+github.com/cockroachdb/cockroach/sql/parser.evalComparisonExpr(0x2083ae390, 0x22083871a0, 0x3321d8, 0x0, 0x0, 0x0, 0x0)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/eval.go:575 +0xbd
+github.com/cockroachdb/cockroach/sql/parser.EvalExpr(0x2208386b78, 0x2083ae390, 0x22083871a0, 0x3321d8, 0x0, 0x0, 0x0, 0x0)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/eval.go:371 +0xa87
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.fuzzSingle(0x2208386ba8, 0x2083e0000, 0x2083ac180)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:102 +0xe74
+github.com/cockroachdb/cockroach/sql/parser/fuzzparse.Fuzz(0x2208535000, 0x33, 0x200000, 0x3)
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/github.com/cockroachdb/cockroach/sql/parser/fuzzparse/main.go:29 +0x4c6
+github.com/dvyukov/go-fuzz/go-fuzz-dep.Main(0x247230)
+	/Users/tschottdorf/go/src/github.com/dvyukov/go-fuzz/go-fuzz-dep/main.go:44 +0x13d
+main.main()
+	/var/folders/yy/4q8rrssd27vdgbr59w9qbffr0000gn/T/go-fuzz-build896428593/src/go-fuzz-main/main.go:10 +0x2a
+exit status 2
