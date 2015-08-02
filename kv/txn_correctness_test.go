@@ -616,6 +616,7 @@ func checkConcurrency(name string, isolations []proto.IsolationType, txns []stri
 	verifier := newHistoryVerifier(name, txns, verify, expSuccess, t)
 	s := createTestDB(t)
 	defer s.Stop()
+	defer teardownHeartbeats(s.Sender)
 	setCorrectnessRetryOptions(s.lSender)
 	verifier.run(isolations, s.DB, t)
 }

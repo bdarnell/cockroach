@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -33,6 +34,7 @@ import (
 	"github.com/cockroachdb/cockroach/security"
 	"github.com/cockroachdb/cockroach/storage/engine"
 	"github.com/cockroachdb/cockroach/util"
+	"github.com/cockroachdb/cockroach/util/caller"
 	"github.com/cockroachdb/cockroach/util/hlc"
 	"github.com/cockroachdb/cockroach/util/leaktest"
 	"github.com/cockroachdb/cockroach/util/stop"
@@ -47,6 +49,7 @@ func teardownHeartbeats(tc *TxnCoordSender) {
 	for _, tm := range tc.txns {
 		if tm.txnEnd != nil {
 			close(tm.txnEnd)
+			tm.txnEnd = nil
 		}
 	}
 	defer tc.Unlock()
@@ -74,8 +77,16 @@ func sendCall(coord *TxnCoordSender, call proto.Call) error {
 }
 
 // newTxn begins a transaction.
-func newTxn(clock *hlc.Clock, baseKey proto.Key) *proto.Transaction {
-	return proto.NewTransaction("test", baseKey, 1, proto.SERIALIZABLE, clock.Now(), clock.MaxOffset().Nanoseconds())
+func newClientTxn(baseKey proto.Key) *proto.Transaction {
+	// The only important thing here is that ID is nil.
+	f, l, fun := caller.Lookup(1)
+	name := fmt.Sprintf("%s:%d %s", f, l, fun)
+	return &proto.Transaction{
+		Name:      name,
+		Key:       baseKey,
+		Priority:  1,
+		Isolation: proto.SERIALIZABLE,
+	}
 }
 
 // createPutRequest returns a ready-made request using the
@@ -111,7 +122,7 @@ func TestTxnCoordSenderAddRequest(t *testing.T) {
 	defer s.Stop()
 	defer teardownHeartbeats(s.Sender)
 
-	txn := newTxn(s.Clock, proto.Key("a"))
+	txn := newClientTxn(proto.Key("a"))
 	putReq := createPutRequest(proto.Key("a"), []byte("value"), txn)
 
 	// Put request will create a new transaction.
@@ -119,7 +130,12 @@ func TestTxnCoordSenderAddRequest(t *testing.T) {
 	if err := sendCall(s.Sender, call); err != nil {
 		t.Fatal(err)
 	}
+	txn = call.Reply.Header().Txn // update txn for its ID
+
+	s.Sender.Lock()
 	txnMeta, ok := s.Sender.txns[string(txn.ID)]
+	s.Sender.Unlock()
+
 	if !ok {
 		t.Fatal("expected a transaction to be created on coordinator")
 	}
@@ -127,20 +143,22 @@ func TestTxnCoordSenderAddRequest(t *testing.T) {
 
 	// Advance time and send another put request. Lock the coordinator
 	// to prevent a data race.
-	s.Sender.Lock()
-	s.Manual.Set(1)
-	s.Sender.Unlock()
+	s.Sender.withLock(func() {
+		s.Manual.Set(1)
+	})
 	call = proto.Call{Args: putReq, Reply: &proto.PutResponse{}}
 	if err := sendCall(s.Sender, call); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Sender.txns) != 1 {
-		t.Errorf("expected length of transactions map to be 1; got %d", len(s.Sender.txns))
-	}
-	txnMeta = s.Sender.txns[string(txn.ID)]
-	if lu := atomic.LoadInt64(&txnMeta.lastUpdateNanos); ts >= lu || lu != s.Manual.UnixNano() {
-		t.Errorf("expected last update time to advance; got %d", lu)
-	}
+	s.Sender.withLock(func() {
+		if len(s.Sender.txns) != 1 {
+			t.Errorf("expected length of transactions map to be 1; got %d", len(s.Sender.txns))
+		}
+		txnMeta = s.Sender.txns[string(txn.ID)]
+		if lu := atomic.LoadInt64(&txnMeta.lastUpdateNanos); ts >= lu || lu != s.Manual.UnixNano() {
+			t.Errorf("expected last update time to advance; got %d", lu)
+		}
+	})
 }
 
 // TestTxnCoordSenderBeginTransaction verifies that a command sent with a
@@ -235,7 +253,7 @@ func TestTxnCoordSenderKeyRanges(t *testing.T) {
 	s := createTestDB(t)
 	defer s.Stop()
 	defer teardownHeartbeats(s.Sender)
-	txn := newTxn(s.Clock, proto.Key("a"))
+	txn := newClientTxn(proto.Key("a"))
 
 	for _, rng := range ranges {
 		if rng.end != nil {
@@ -244,12 +262,14 @@ func TestTxnCoordSenderKeyRanges(t *testing.T) {
 			if err := sendCall(s.Sender, call); err != nil {
 				t.Fatal(err)
 			}
+			txn = call.Reply.Header().Txn // update for ID
 		} else {
 			putReq := createPutRequest(rng.start, []byte("value"), txn)
 			call := proto.Call{Args: putReq, Reply: &proto.PutResponse{}}
 			if err := sendCall(s.Sender, call); err != nil {
 				t.Fatal(err)
 			}
+			txn = call.Reply.Header().Txn // update for ID
 		}
 	}
 
@@ -272,8 +292,8 @@ func TestTxnCoordSenderMultipleTxns(t *testing.T) {
 	defer s.Stop()
 	defer teardownHeartbeats(s.Sender)
 
-	txn1 := newTxn(s.Clock, proto.Key("a"))
-	txn2 := newTxn(s.Clock, proto.Key("b"))
+	txn1 := newClientTxn(proto.Key("a"))
+	txn2 := newClientTxn(proto.Key("b"))
 	call := proto.Call{
 		Args:  createPutRequest(proto.Key("a"), []byte("value"), txn1),
 		Reply: &proto.PutResponse{}}
@@ -303,13 +323,14 @@ func TestTxnCoordSenderHeartbeat(t *testing.T) {
 	// Set heartbeat interval to 1ms for testing.
 	s.Sender.heartbeatInterval = 1 * time.Millisecond
 
-	initialTxn := newTxn(s.Clock, proto.Key("a"))
+	initialTxn := newClientTxn(proto.Key("a"))
 	call := proto.Call{
 		Args:  createPutRequest(proto.Key("a"), []byte("value"), initialTxn),
 		Reply: &proto.PutResponse{}}
 	if err := sendCall(s.Sender, call); err != nil {
 		t.Fatal(err)
 	}
+	initialTxn = call.Reply.Header().Txn // store initialized transaction
 
 	// Verify 3 heartbeats.
 	var heartbeatTS proto.Timestamp
@@ -382,7 +403,7 @@ func TestTxnCoordSenderEndTxn(t *testing.T) {
 	s := createTestDB(t)
 	defer s.Stop()
 
-	txn := newTxn(s.Clock, proto.Key("a"))
+	txn := newClientTxn(proto.Key("a"))
 	pReply := &proto.PutResponse{}
 	key := proto.Key("a")
 	call := proto.Call{
@@ -392,6 +413,7 @@ func TestTxnCoordSenderEndTxn(t *testing.T) {
 	if err := sendCall(s.Sender, call); err != nil {
 		t.Fatal(err)
 	}
+	txn = call.Reply.Header().Txn
 	if pReply.GoError() != nil {
 		t.Fatal(pReply.GoError())
 	}
@@ -419,10 +441,11 @@ func TestTxnCoordSenderCleanupOnAborted(t *testing.T) {
 	defer leaktest.AfterTest(t)
 	s := createTestDB(t)
 	defer s.Stop()
+	defer teardownHeartbeats(s.Sender)
 
 	// Create a transaction with intent at "a".
 	key := proto.Key("a")
-	txn := newTxn(s.Clock, key)
+	txn := newClientTxn(key)
 	txn.Priority = 1
 	call := proto.Call{
 		Args:  createPutRequest(key, []byte("value"), txn),
@@ -431,29 +454,49 @@ func TestTxnCoordSenderCleanupOnAborted(t *testing.T) {
 	if err := sendCall(s.Sender, call); err != nil {
 		t.Fatal(err)
 	}
+	txn = call.Reply.Header().Txn // transaction is now initialized
 
 	// Push the transaction to abort it.
-	txn2 := newTxn(s.Clock, key)
-	txn2.Priority = 2
-	pushArgs := &proto.InternalPushTxnRequest{
-		RequestHeader: proto.RequestHeader{
-			Key: txn.Key,
-			Txn: txn2,
-		},
-		Now:       s.Clock.Now(),
-		PusheeTxn: *txn,
-		PushType:  proto.ABORT_TXN,
-	}
-	call = proto.Call{
-		Args:  pushArgs,
-		Reply: &proto.InternalPushTxnResponse{},
-	}
-	if err := sendCall(s.Sender, call); err != nil {
-		t.Fatal(err)
+	{
+		txn2 := newClientTxn(key)
+		txn2.Priority = math.MaxInt32
+		pushArgs := &proto.InternalPushTxnRequest{
+			RequestHeader: proto.RequestHeader{
+				Key: txn.Key,
+				Txn: txn2,
+			},
+			Now:       s.Clock.Now(),
+			PusheeTxn: *txn,
+			PushType:  proto.ABORT_TXN,
+		}
+		call = proto.Call{
+			Args:  pushArgs,
+			Reply: &proto.InternalPushTxnResponse{},
+		}
+		if err := sendCall(s.Sender, call); err != nil {
+			t.Fatal(err)
+		}
+		txn2 = call.Reply.Header().Txn
+		// End this second transaction to leave a clean slate.
+		etArgs := &proto.EndTransactionRequest{
+			RequestHeader: proto.RequestHeader{
+				Key:       txn.Key,
+				Timestamp: txn2.Timestamp,
+				Txn:       txn2,
+			},
+			Commit: true,
+		}
+		call = proto.Call{
+			Args:  etArgs,
+			Reply: &proto.EndTransactionResponse{},
+		}
+		if err := sendCall(s.Sender, call); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	// Now end the transaction and verify we've cleanup up, even though
-	// end transaction failed.
+	// Now end the original transaction and verify we've cleanup up, even
+	// though end transaction fails.
 	etArgs := &proto.EndTransactionRequest{
 		RequestHeader: proto.RequestHeader{
 			Key:       txn.Key,
@@ -488,7 +531,7 @@ func TestTxnCoordSenderGC(t *testing.T) {
 	// Set heartbeat interval to 1ms for testing.
 	s.Sender.heartbeatInterval = 1 * time.Millisecond
 
-	txn := newTxn(s.Clock, proto.Key("a"))
+	txn := newClientTxn(proto.Key("a"))
 	call := proto.Call{
 		Args:  createPutRequest(proto.Key("a"), []byte("value"), txn),
 		Reply: &proto.PutResponse{},
@@ -496,6 +539,7 @@ func TestTxnCoordSenderGC(t *testing.T) {
 	if err := sendCall(s.Sender, call); err != nil {
 		t.Fatal(err)
 	}
+	txn = call.Reply.Header().Txn
 
 	// Now, advance clock past the default client timeout.
 	// Locking the TxnCoordSender to prevent a data race.
@@ -533,27 +577,26 @@ func (ts *testSender) Send(_ context.Context, call proto.Call) {
 func (ts *testSender) Close() {
 }
 
-var testPutReq = &proto.PutRequest{
-	RequestHeader: proto.RequestHeader{
-		Key:          proto.Key("test-key"),
-		User:         security.RootUser,
-		UserPriority: gogoproto.Int32(-1),
-		Txn: &proto.Transaction{
-			Name: "test txn",
+func testPutReq() *proto.PutRequest {
+	return &proto.PutRequest{
+		RequestHeader: proto.RequestHeader{
+			Key:          proto.Key("test-key"),
+			User:         security.RootUser,
+			UserPriority: gogoproto.Int32(-1),
+			Txn: &proto.Transaction{
+				Name: "test txn",
+			},
+			Replica: proto.Replica{
+				NodeID: 12345,
+			},
 		},
-		Replica: proto.Replica{
-			NodeID: 12345,
-		},
-	},
+	}
 }
 
 // TestTxnCoordSenderTxnUpdatedOnError verifies that errors adjust the
 // response transaction's timestamp and priority as appropriate.
 func TestTxnCoordSenderTxnUpdatedOnError(t *testing.T) {
 	defer leaktest.AfterTest(t)
-	manual := hlc.NewManualClock(0)
-	clock := hlc.NewClock(manual.UnixNano)
-	clock.SetMaxOffset(20)
 
 	testCases := []struct {
 		err       error
@@ -579,17 +622,20 @@ func TestTxnCoordSenderTxnUpdatedOnError(t *testing.T) {
 	}
 
 	for i, test := range testCases {
+		manual := hlc.NewManualClock(0)
+		clock := hlc.NewClock(manual.UnixNano)
+		clock.SetMaxOffset(20)
 		stopper := stop.NewStopper()
 		ts := NewTxnCoordSender(newTestSender(func(call proto.Call) {
 			call.Reply.Header().SetGoError(test.err)
 		}), clock, false, nil, stopper)
 		reply := &proto.PutResponse{}
-		ts.Send(context.Background(), proto.Call{Args: testPutReq, Reply: reply})
+		ts.Send(context.Background(), proto.Call{Args: testPutReq(), Reply: reply})
 		teardownHeartbeats(ts)
 		stopper.Stop()
 
-		if reflect.TypeOf(test.err) != reflect.TypeOf(reply.GoError()) {
-			t.Fatalf("%d: expected %T; got %T", i, test.err, reply.GoError())
+		if err := reply.GoError(); reflect.TypeOf(test.err) != reflect.TypeOf(err) {
+			t.Fatalf("%d: expected %T (%s); got %T (%s)", i, test.err, test.err, err, err)
 		}
 		if reply.Txn.Epoch != test.expEpoch {
 			t.Errorf("%d: expected epoch = %d; got %d",
@@ -604,7 +650,7 @@ func TestTxnCoordSenderTxnUpdatedOnError(t *testing.T) {
 				i, test.expTS, reply.Txn.Timestamp)
 		}
 		if !reply.Txn.OrigTimestamp.Equal(test.expOrigTS) {
-			t.Errorf("%d: expected orig timestamp to be %s + 1; got %s",
+			t.Errorf("%d: expected orig timestamp to be %s; got %s",
 				i, test.expOrigTS, reply.Txn.OrigTimestamp)
 		}
 		if nodes := reply.Txn.CertainNodes.Nodes; (len(nodes) != 0) != test.nodeSeen {
@@ -627,6 +673,7 @@ func TestTxnCoordSenderBatchTransaction(t *testing.T) {
 		called = true
 		return
 	}), clock, false, nil, stopper)
+	defer teardownHeartbeats(ts)
 
 	testCases := []struct{ batch, arg, ok bool }{
 		{false, false, true},
@@ -635,8 +682,9 @@ func TestTxnCoordSenderBatchTransaction(t *testing.T) {
 		{false, true, false},
 	}
 
-	txn1 := &proto.Transaction{ID: []byte("txn1")}
-	txn2 := &proto.Transaction{ID: []byte("txn2")}
+	key := proto.Key("z")
+	txn1 := newClientTxn(key)
+	txn2 := newClientTxn(key)
 
 	for i, tc := range testCases {
 		bArgs := &proto.InternalBatchRequest{}
@@ -657,7 +705,7 @@ func TestTxnCoordSenderBatchTransaction(t *testing.T) {
 		if !tc.ok && bReply.GoError() == nil {
 			t.Fatalf("%d: expected error", i)
 		} else if tc.ok != called {
-			t.Fatalf("%d: wanted call: %t, got call: %t", i, tc.ok, called)
+			t.Fatalf("%d: wanted call: %t, got call: %t, error: %s", i, tc.ok, called, bReply.GoError())
 		}
 	}
 }
@@ -677,9 +725,9 @@ func TestTxnDrainingNode(t *testing.T) {
 		t.Fatal("stopper draining prematurely")
 	}
 
-	txn := newTxn(s.Clock, proto.Key("a"))
 	key := proto.Key("a")
-	beginTxn := func() {
+	txn := newClientTxn(key)
+	beginTxn := func() *proto.Transaction {
 		pReply := &proto.PutResponse{}
 		call := proto.Call{
 			Args:  createPutRequest(key, []byte("value"), txn),
@@ -691,6 +739,7 @@ func TestTxnDrainingNode(t *testing.T) {
 		if pReply.GoError() != nil {
 			t.Fatal(pReply.GoError())
 		}
+		return call.Reply.Header().Txn
 	}
 	endTxn := func() {
 		etReply := &proto.EndTransactionResponse{}
@@ -710,7 +759,7 @@ func TestTxnDrainingNode(t *testing.T) {
 		}
 	}
 
-	beginTxn() // begin before draining
+	txn = beginTxn() // begin before draining
 	go func() {
 		s.Stopper.Stop()
 	}()
@@ -753,7 +802,7 @@ func TestTxnCoordIdempotentCleanup(t *testing.T) {
 	s := createTestDB(t)
 	defer s.Stop()
 
-	txn := newTxn(s.Clock, proto.Key("a"))
+	txn := newClientTxn(proto.Key("a"))
 	pReply := &proto.PutResponse{}
 	key := proto.Key("a")
 	call := proto.Call{
@@ -763,10 +812,10 @@ func TestTxnCoordIdempotentCleanup(t *testing.T) {
 	if err := sendCall(s.Sender, call); err != nil {
 		t.Fatal(err)
 	}
-
 	if pReply.Error != nil {
 		t.Fatal(pReply.GoError())
 	}
+	txn = call.Reply.Header().Txn
 	s.Sender.cleanupTxn(nil, *txn, nil) // first call
 	etReply := &proto.EndTransactionResponse{}
 	s.Sender.Send(context.Background(), proto.Call{

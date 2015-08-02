@@ -221,6 +221,9 @@ func (s *Stopper) Quiesce() {
 	defer s.mu.Unlock()
 	s.draining = true
 	for s.numTasks > 0 {
+		go func() {
+			fmt.Printf("running tasks:\n%s\n", s.RunningTasks())
+		}()
 		// Unlock s.mu, wait for the signal, and lock s.mu.
 		s.drain.Wait()
 	}

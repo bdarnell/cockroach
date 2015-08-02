@@ -263,6 +263,12 @@ func NewTxnCoordSender(wrapped client.Sender, clock *hlc.Clock, linearizable boo
 	return tc
 }
 
+func (tc *TxnCoordSender) withLock(f func()) {
+	tc.Lock()
+	f()
+	defer tc.Unlock()
+}
+
 // startStats blocks and periodically logs transaction statistics (throughput,
 // success rates, durations, ...).
 // TODO(tschottdorf): Use a proper metrics subsystem for this (+the store-level
@@ -351,13 +357,19 @@ func (tc *TxnCoordSender) startStats() {
 // if it's not nil but has an empty ID.
 func (tc *TxnCoordSender) Send(ctx context.Context, call proto.Call) {
 	header := call.Args.Header()
-	tc.maybeBeginTxn(header)
+	first, err := tc.maybeBeginTxn(header)
+	if err != nil {
+		call.Reply.Header().SetGoError(err)
+		return
+	}
 	header.CmdID = header.GetOrCreateCmdID(tc.clock.PhysicalNow())
-
 	// This is the earliest point at which the request has a ClientCmdID and/or
 	// TxnID (if applicable). Begin a Trace which follows this request.
 	trace := tc.tracer.NewTrace(call.Args.Header())
 	defer trace.Finalize()
+	if first {
+		trace.Event("transaction begins")
+	}
 	defer trace.Epoch(fmt.Sprintf("sending %s", call.Method()))()
 	defer func() {
 		if err := call.Reply.Header().GoError(); err != nil {
@@ -392,21 +404,71 @@ func (tc *TxnCoordSender) Send(ctx context.Context, call proto.Call) {
 
 // maybeBeginTxn begins a new transaction if a txn has been specified
 // in the request but has a nil ID. The new transaction is initialized
-// using the name and isolation in the otherwise uninitialized txn.
-// The Priority, if non-zero is used as a minimum.
-func (tc *TxnCoordSender) maybeBeginTxn(header *proto.RequestHeader) {
-	if header.Txn != nil {
-		if len(header.Txn.ID) == 0 {
-			newTxn := proto.NewTransaction(header.Txn.Name, keys.KeyAddress(header.Key), header.GetUserPriority(),
-				header.Txn.Isolation, tc.clock.Now(), tc.clock.MaxOffset().Nanoseconds())
-			// Use existing priority as a minimum. This is used on transaction
-			// aborts to ratchet priority when creating successor transaction.
-			if newTxn.Priority < header.Txn.Priority {
-				newTxn.Priority = header.Txn.Priority
-			}
-			header.Txn = newTxn
-		}
+// using the name and isolation in the otherwise uninitialized txn, and
+// it is registered with the sender (which entails starting heartbeats).
+// The Priority, if non-zero, is used as a minimum.
+// If the header indicates a previously started transaction but we we don't
+// have a record of it, an error is returned. This prevents clients from
+// running a transaction over multiple gateways.
+// The bool returned is true if this request registered a new transaction.
+func (tc *TxnCoordSender) maybeBeginTxn(header *proto.RequestHeader) (bool, error) {
+	if header.Txn == nil {
+		return false, nil
 	}
+	if len(header.Txn.ID) != 0 {
+		tc.Lock()
+		_, started := tc.txns[string(header.Txn.ID)]
+		tc.Unlock()
+		if !started {
+			return false, util.Errorf("transaction must not involve multiple client gateways")
+		}
+		return false, nil
+	}
+
+	newTxn := proto.NewTransaction(header.Txn.Name, keys.KeyAddress(header.Key), header.GetUserPriority(),
+		header.Txn.Isolation, tc.clock.Now(), tc.clock.MaxOffset().Nanoseconds())
+	// Use existing priority as a minimum. This is used on transaction
+	// aborts to ratchet priority when creating successor transaction.
+	if newTxn.Priority < header.Txn.Priority {
+		newTxn.Priority = header.Txn.Priority
+	}
+	header.Txn = newTxn
+	id := string(header.Txn.ID)
+
+	tc.Lock()
+	tc.txns[string(header.Txn.ID)] = &txnMetadata{
+		txn:              *header.Txn,
+		keys:             cache.NewIntervalCache(cache.Config{Policy: cache.CacheNone}),
+		firstUpdateNanos: tc.clock.PhysicalNow(),
+		lastUpdateNanos:  tc.clock.PhysicalNow(),
+		timeoutDuration:  tc.clientTimeout,
+		txnEnd:           make(chan []proto.Key, 1),
+	}
+	tc.Unlock()
+
+	// TODO(tschottdorf): Slight waste of resources here to start heartbeats
+	// for all transactions right away (they're never needed for read-only
+	// transactions). This is mandated by forcing transactions to stay on one
+	// coordinator: That means we need to register them right away, but if we
+	// register then someone needs to clean up, and that's the heartbeat
+	// goroutine. Instead, could add the coordinator's ID into the Txn object
+	// and keep clients sticky that way. Then registration and heartbeats can
+	// be postponed to after the first write again.
+	if !tc.stopper.RunAsyncTask(func() {
+		tc.heartbeat(id)
+	}) {
+		// The system is already draining and we can't start the
+		// heartbeat. Since the heartbeat also resolves intents,
+		// and since intent resolution may be critical for
+		// another running task (which may need to see an intent
+		// on the meta adressing records in order to hit the
+		// correct range), we fail here.
+		// TODO(tschottdorf): this will cede to be necessary once
+		// intent resolution is moved to Range.
+		tc.unregisterTxn(id)
+		return false, &proto.NodeUnavailableError{}
+	}
+	return true, nil
 }
 
 // sendOne sends a single call via the wrapped sender. If the call is
@@ -456,49 +518,24 @@ func (tc *TxnCoordSender) sendOne(ctx context.Context, call proto.Call) {
 		tc.updateResponseTxn(header, call.Reply.Header())
 	}
 
-	if txn := call.Reply.Header().Txn; txn != nil {
+	if txn := call.Reply.Header().Txn; txn != nil &&
+		call.Reply.Header().GoError() == nil {
 		tc.Lock()
-		txnMeta := tc.txns[string(txn.ID)]
-		// If this transactional command leaves transactional intents, add the key
-		// or key range to the intents map. If the transaction metadata doesn't yet
-		// exist, create it.
-		if call.Reply.Header().GoError() == nil {
-			if proto.IsTransactionWrite(call.Args) {
-				if txnMeta == nil {
-					trace.Event("coordinator spawns")
-					txnMeta = &txnMetadata{
-						txn:              *txn,
-						keys:             cache.NewIntervalCache(cache.Config{Policy: cache.CacheNone}),
-						firstUpdateNanos: tc.clock.PhysicalNow(),
-						lastUpdateNanos:  tc.clock.PhysicalNow(),
-						timeoutDuration:  tc.clientTimeout,
-						txnEnd:           make(chan []proto.Key, 1),
-					}
-					id := string(txn.ID)
-					tc.txns[id] = txnMeta
-					if !tc.stopper.RunAsyncTask(func() {
-						tc.heartbeat(id)
-					}) {
-						// The system is already draining and we can't start the
-						// heartbeat. Since the heartbeat also resolves intents,
-						// and since intent resolution may be critical for
-						// another running task (which may need to see an intent
-						// on the meta adressing records in order to hit the
-						// correct range), we fail here.
-						call.Reply.Header().SetGoError(&proto.NodeUnavailableError{})
-						tc.Unlock()
-						tc.unregisterTxn(id)
-						return
-					}
-				}
-				txnMeta.addKeyRange(header.Key, header.EndKey)
-			}
-			// Update our record of this transaction.
-			if txnMeta != nil {
-				txnMeta.txn = *txn
-				txnMeta.setLastUpdate(tc.clock.PhysicalNow())
-			}
+		id := string(txn.ID)
+		txnMeta, ok := tc.txns[id]
+		if !ok {
+			call.Reply.Header().SetGoError(util.Errorf("transaction has already ended"))
+			tc.Unlock()
+			return
 		}
+		// If this transactional command leaves transactional intents, add the key
+		// or key range to the intents map.
+		if proto.IsTransactionWrite(call.Args) {
+			txnMeta.addKeyRange(header.Key, header.EndKey)
+		}
+		// Update our record of this transaction.
+		txnMeta.txn = *txn
+		txnMeta.setLastUpdate(tc.clock.PhysicalNow())
 		tc.Unlock()
 	}
 

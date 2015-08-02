@@ -383,6 +383,20 @@ func TestMultiRangeScanDeleteRange(t *testing.T) {
 	if rows := scan.Reply.(*proto.ScanResponse).Rows; len(rows) > 0 {
 		t.Fatalf("scan after delete returned rows: %v", rows)
 	}
+	scan.Args.Header().Txn = scan.Reply.Header().Txn
+	scan.Args.Header().EndKey = nil
+	scan.Args.Header().Key = scan.Reply.Header().Txn.Key
+	endCall := proto.Call{
+		Args: &proto.EndTransactionRequest{
+			Commit:        false,
+			RequestHeader: *(scan.Args.Header()),
+		},
+		Reply: &proto.EndTransactionResponse{},
+	}
+	tds.Send(context.Background(), endCall)
+	if err := endCall.Reply.Header().GoError(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestMultiRangeScanWithMaxResults tests that commands which access multiple

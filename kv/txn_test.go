@@ -126,6 +126,7 @@ func BenchmarkTxnWrites(b *testing.B) {
 func verifyUncertainty(concurrency int, maxOffset time.Duration, t *testing.T) {
 	s := createTestDB(t)
 	defer s.Stop()
+	defer teardownHeartbeats(s.Sender)
 
 	key := []byte("key-test")
 	// wgStart waits for all transactions to line up, wgEnd has the main
@@ -214,7 +215,7 @@ func verifyUncertainty(concurrency int, maxOffset time.Duration, t *testing.T) {
 func TestTxnDBUncertainty(t *testing.T) {
 	defer leaktest.AfterTest(t)
 	// Make sure that we notice immediately if any kind of backing off is
-	// happening. Restore the previous options after this test is done to avoid
+	// happening. Restore the previous options after this test to avoid
 	// interfering with other tests.
 	defaultRetryOptions := client.DefaultTxnRetryOptions
 	defer func() {

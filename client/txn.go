@@ -272,7 +272,11 @@ func (txn *Txn) exec(retryable func(txn *Txn) error) (err error) {
 	for r := retry.Start(txn.db.txnRetryOptions); r.Next(); {
 		txn.haveTxnWrite, txn.haveEndTxn = false, false // always reset before [re]starting txn
 		if err = retryable(txn); err == nil {
-			if !txn.haveEndTxn && txn.haveTxnWrite {
+			// TODO(tschottdorf): Previously, an optimization here would omit
+			// the EndTransaction if txn.haveTxnWrite == false. This isn't
+			// currently possible any more since the txn coordinator goroutine
+			// starts with the first request (previously: write request).
+			if !txn.haveEndTxn {
 				// If there were no errors running retryable, commit the txn. This
 				// may block waiting for outstanding writes to complete in case
 				// retryable didn't -- we need the most recent of all response
@@ -296,7 +300,7 @@ func (txn *Txn) exec(retryable func(txn *Txn) error) (err error) {
 		}
 		break
 	}
-	if err != nil && txn.haveTxnWrite {
+	if err != nil /* TODO(tschottdorf) && txn.haveTxnWrite */ {
 		if replyErr := txn.send(proto.Call{
 			Args:  &proto.EndTransactionRequest{Commit: false},
 			Reply: &proto.EndTransactionResponse{},

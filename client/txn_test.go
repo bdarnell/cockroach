@@ -148,6 +148,7 @@ func TestTransactionConfig(t *testing.T) {
 // operations were performed.
 func TestCommitReadOnlyTransaction(t *testing.T) {
 	defer leaktest.AfterTest(t)
+	t.Skip("tested behavior has changed: #1873")
 	var calls []proto.Method
 	db := newDB(newTestSender(func(call proto.Call) {
 		calls = append(calls, call.Method())
@@ -211,6 +212,7 @@ func TestCommitTransactionOnce(t *testing.T) {
 // upon failed invocation of the retryable func.
 func TestAbortReadOnlyTransaction(t *testing.T) {
 	defer leaktest.AfterTest(t)
+	t.Skip("tested behavior has changed: #1873")
 	db := newDB(newTestSender(func(call proto.Call) {
 		if _, ok := call.Args.(*proto.EndTransactionRequest); ok {
 			t.Errorf("did not expect EndTransaction")
