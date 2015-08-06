@@ -116,13 +116,16 @@ var configDescriptors = [...]*configDescriptor{
 }
 
 // tsCacheMethods specifies the set of methods which affect the
-// timestamp cache.
+// timestamp cache. This syntax creates a sparse array with maximum
+// index equal to the value of the final Method. Unused indexes
+// default to false.
 var tsCacheMethods = [...]bool{
 	proto.Get:                true,
 	proto.Put:                true,
 	proto.ConditionalPut:     true,
 	proto.Increment:          true,
 	proto.Scan:               true,
+	proto.ReverseScan:        true,
 	proto.Delete:             true,
 	proto.DeleteRange:        true,
 	proto.ResolveIntent:      true,
@@ -134,6 +137,9 @@ var tsCacheMethods = [...]bool{
 func usesTimestampCache(r proto.Request) bool {
 	m := r.Method()
 	if m < 0 || m >= proto.Method(len(tsCacheMethods)) {
+		return false
+	}
+	if proto.IsReadOnly(r) && r.Header().ReadConsistency == proto.INCONSISTENT {
 		return false
 	}
 	return tsCacheMethods[m]
@@ -344,11 +350,13 @@ func (r *Replica) requestLeaderLease(timestamp proto.Timestamp) error {
 			RaftNodeID: r.rm.RaftNodeID(),
 		},
 	}
+	bArgs := &proto.BatchRequest{}
+	bArgs.Add(args)
 	// Send lease request directly to raft in order to skip unnecessary
 	// checks from normal request machinery, (e.g. the command queue).
 	// Note that the command itself isn't traced, but usually the caller
 	// waiting for the result has an active Trace.
-	errChan, pendingCmd := r.proposeRaftCommand(r.context(), args)
+	errChan, pendingCmd := r.proposeRaftCommand(r.context(), bArgs)
 	if err := <-errChan; err != nil {
 		return err
 	}
@@ -507,27 +515,46 @@ func (r *Replica) SetLastVerificationTimestamp(timestamp proto.Timestamp) error 
 // range's leadership is confirmed. The command is then dispatched
 // either along the read-only execution path or the read-write Raft
 // command queue.
-func (r *Replica) AddCmd(ctx context.Context, args proto.Request) (proto.Response, error) {
+func (r *Replica) AddCmd(ctx context.Context, args proto.Request) (reply proto.Response, err error) {
+	// Wrap non-batch requests in a batch if possible.
+	bArgs, ok := args.(*proto.BatchRequest)
+	if !ok && proto.CanBatch(args) {
+		bArgs = &proto.BatchRequest{
+			RequestHeader: *args.Header(),
+		}
+		bArgs.Add(args)
+		// Unwrap reply via deferred function.
+		defer func() {
+			if err == nil {
+				bReply, ok := reply.(*proto.BatchResponse)
+				if !ok || len(bReply.Responses) != 1 {
+					panic("expected a BatchResponse with a single wrapped response")
+				}
+				reply = bReply.Responses[0].GetValue().(proto.Response)
+			} else {
+				reply = args.CreateReply()
+			}
+		}()
+	}
 	// TODO(tschottdorf) Some (internal) requests go here directly, so they
 	// won't be traced.
 	trace := tracer.FromCtx(ctx)
-	// Differentiate between admin, read-only and read-write.
-	var reply proto.Response
-	var err error
+	// Differentiate between admin, read-only and write.
 	if proto.IsAdmin(args) {
 		defer trace.Epoch("admin path")()
 		reply, err = r.addAdminCmd(ctx, args)
 	} else if proto.IsReadOnly(args) {
 		defer trace.Epoch("read-only path")()
-		reply, err = r.addReadOnlyCmd(ctx, args)
+		reply, err = r.addReadOnlyCmd(ctx, bArgs)
 	} else if proto.IsWrite(args) {
 		defer trace.Epoch("read-write path")()
-		reply, err = r.addWriteCmd(ctx, args, nil)
+		reply, err = r.addWriteCmd(ctx, bArgs, nil)
+	} else if bArgs != nil && len(bArgs.Requests) == 0 {
+		// empty batch; do nothing.
 	} else {
-		panic(fmt.Sprintf("don't know how to handle command %T", args))
+		panic(fmt.Sprintf("don't know how to handle command %T: %+v", args, args))
 	}
-
-	return reply, err
+	return
 }
 
 func (r *Replica) checkCmdHeader(header *proto.RequestHeader) error {
@@ -537,37 +564,105 @@ func (r *Replica) checkCmdHeader(header *proto.RequestHeader) error {
 	return nil
 }
 
-// beginCmd waits for any overlapping, already-executing commands via
-// the command queue and adds itself to the queue to gate follow-on
-// commands which overlap its key range. This method will block if
-// there are any overlapping commands already in the queue. Returns
-// the command queue insertion key, to be supplied to subsequent
-// invocation of endCmd().
-func (r *Replica) beginCmd(header *proto.RequestHeader, readOnly bool) interface{} {
+// checkBatchRequest verifies BatchRequest validity requirements. In
+// particular, timestamp, user, user priority and transactions must
+// all be set to identical values between the batch request header and
+// all constituent batch requests. Also, either all requests must be
+// read-only, or none.
+func (r *Replica) checkBatchRequest(bArgs *proto.BatchRequest) error {
+	var isReadOnly bool
+	for i := range bArgs.Requests {
+		args := bArgs.Requests[i].GetValue().(proto.Request)
+		header := args.Header()
+		if args.Method() == proto.EndTransaction && len(bArgs.Requests) != 1 {
+			return util.Error("cannot mix EndTransaction with other operations in a batch")
+		}
+		if !header.Timestamp.Equal(bArgs.Timestamp) {
+			return util.Error("conflicting timestamp on call in batch")
+		}
+		if header.GetUserPriority() != bArgs.GetUserPriority() {
+			return util.Error("conflicting user priority on call in batch")
+		}
+		if !header.Txn.Equal(bArgs.Txn) {
+			return util.Error("conflicting transaction on call in transactional batch")
+		}
+		if proto.IsReadOnly(args) && header.ReadConsistency == proto.INCONSISTENT {
+			// Disallow any inconsistent reads within txns.
+			if header.Txn != nil {
+				return util.Error("cannot allow inconsistent reads within a transaction")
+			}
+		} else if proto.IsReadOnly(args) && header.ReadConsistency == proto.CONSENSUS {
+			return util.Error("consensus reads not implemented")
+		}
+		if i == 0 {
+			isReadOnly = proto.IsReadOnly(args)
+		} else if proto.IsReadOnly(args) != isReadOnly {
+			return util.Error("batch mixes read-only and write requests")
+		}
+	}
+	return nil
+}
+
+// beginCmds waits for any overlapping, already-executing commands via
+// the command queue and adds itself to queues based on keys affected
+// by the batched commands specified as part of batch. This gates
+// subsequent commands with overlapping keys or key ranges. This
+// method will block if there are any overlapping commands already in
+// the queue. Returns the command queue insertion keys, to be supplied
+// to a subsequent invocation of endCmds().
+func (r *Replica) beginCmds(bArgs *proto.BatchRequest) ([]interface{}, error) {
 	r.Lock()
 	var wg sync.WaitGroup
-	r.cmdQ.GetWait(header.Key, header.EndKey, readOnly, &wg)
-	cmdKey := r.cmdQ.Add(header.Key, header.EndKey, readOnly)
+	var cmdKeys []interface{}
+	for i := range bArgs.Requests {
+		args := bArgs.Requests[i].GetValue().(proto.Request)
+		header := args.Header()
+		// Don't use the command queue for inconsistent reads.
+		if proto.IsReadOnly(args) && header.ReadConsistency == proto.INCONSISTENT {
+			continue
+		}
+		readOnly := proto.IsReadOnly(args)
+		r.cmdQ.GetWait(header.Key, header.EndKey, readOnly, &wg)
+		cmdKeys = append(cmdKeys, r.cmdQ.Add(header.Key, header.EndKey, readOnly))
+	}
 	r.Unlock()
 	wg.Wait()
+
 	// Update the incoming timestamp if unset. Wait until after any
 	// preceding command(s) for key range are complete so that the node
 	// clock has been updated to the high water mark of any commands
 	// which might overlap this one in effect.
-	if header.Timestamp.Equal(proto.ZeroTimestamp) {
-		header.Timestamp = r.rm.Clock().Now()
+	if bArgs.Timestamp.Equal(proto.ZeroTimestamp) {
+		bArgs.Timestamp = r.rm.Clock().Now()
 	}
-	return cmdKey
+	for i := range bArgs.Requests {
+		args := bArgs.Requests[i].GetValue().(proto.Request)
+		header := args.Header()
+		if header.Timestamp.Equal(proto.ZeroTimestamp) {
+			header.Timestamp = bArgs.Timestamp
+		}
+	}
+
+	return cmdKeys, nil
 }
 
-// endCmd removes a pending command from the command queue.
-func (r *Replica) endCmd(cmdKey interface{}, args proto.Request, err error, readOnly bool) {
+// endCmds removes pending commands from the command queue and updates
+// the timestamp cache using the final timestamp of each command.
+func (r *Replica) endCmds(cmdKeys []interface{}, bArgs *proto.BatchRequest, err error) {
 	r.Lock()
-	if err == nil && usesTimestampCache(args) {
-		header := args.Header()
-		r.tsCache.Add(header.Key, header.EndKey, header.Timestamp, header.Txn.GetID(), readOnly)
+	// Only update the timestamp cache if the command succeeded.
+	if err == nil {
+		for i := range bArgs.Requests {
+			args := bArgs.Requests[i].GetValue().(proto.Request)
+			if usesTimestampCache(args) {
+				header := args.Header()
+				r.tsCache.Add(header.Key, header.EndKey, header.Timestamp, header.Txn.GetID(), proto.IsReadOnly(args))
+			}
+		}
 	}
-	r.cmdQ.Remove(cmdKey)
+	for _, cmdKey := range cmdKeys {
+		r.cmdQ.Remove(cmdKey)
+	}
 	r.Unlock()
 }
 
@@ -602,47 +697,62 @@ func (r *Replica) addAdminCmd(ctx context.Context, args proto.Request) (proto.Re
 // addReadOnlyCmd updates the read timestamp cache and waits for any
 // overlapping writes currently processing through Raft ahead of us to
 // clear via the read queue.
-func (r *Replica) addReadOnlyCmd(ctx context.Context, args proto.Request) (proto.Response, error) {
-	header := args.Header()
+func (r *Replica) addReadOnlyCmd(ctx context.Context, bArgs *proto.BatchRequest) (*proto.BatchResponse, error) {
+	header := bArgs.Header()
 
 	if err := r.checkCmdHeader(header); err != nil {
 		return nil, err
 	}
-
-	// If read-consistency is set to INCONSISTENT, run directly.
-	if header.ReadConsistency == proto.INCONSISTENT {
-		// But disallow any inconsistent reads within txns.
-		if header.Txn != nil {
-			return nil, util.Error("cannot allow inconsistent reads within a transaction")
-		}
-		if header.Timestamp.Equal(proto.ZeroTimestamp) {
-			header.Timestamp = r.rm.Clock().Now()
-		}
-		reply, intents, err := r.executeCmd(r.rm.Engine(), nil, args)
-		r.handleSkippedIntents(args, intents) // even on error
-		return reply, err
-	} else if header.ReadConsistency == proto.CONSENSUS {
-		return nil, util.Error("consensus reads not implemented")
-	}
-
-	// Add the read to the command queue to gate subsequent
-	// overlapping commands until this command completes.
-	cmdKey := r.beginCmd(header, true)
-
-	// This replica must have leader lease to process a consistent read.
-	if err := r.redirectOnOrAcquireLeaderLease(tracer.FromCtx(ctx), header.Timestamp); err != nil {
-		r.endCmd(cmdKey, args, err, true /* readOnly */)
+	if err := r.checkBatchRequest(bArgs); err != nil {
 		return nil, err
 	}
 
-	// Execute read-only command.
-	reply, intents, err := r.executeCmd(r.rm.Engine(), nil, args)
+	trace := tracer.FromCtx(ctx)
 
-	// Only update the timestamp cache if the command succeeded.
-	r.endCmd(cmdKey, args, err, true /* readOnly */)
+	// Add the read to the command queue to gate subsequent
+	// overlapping commands until this command completes.
+	qDone := trace.Epoch("command queue")
+	cmdKeys, err := r.beginCmds(bArgs)
+	qDone()
+	if err != nil {
+		return nil, err
+	}
 
-	r.handleSkippedIntents(args, intents) // even on error
-	return reply, err
+	// If there are command keys (there might not be if reads are
+	// inconsistent), the read requires the leader lease.
+	if len(cmdKeys) > 0 {
+		if err := r.redirectOnOrAcquireLeaderLease(tracer.FromCtx(ctx), header.Timestamp); err != nil {
+			r.endCmds(cmdKeys, bArgs, err)
+			return nil, err
+		}
+	}
+
+	// Execute read-only batch command.
+	bReply := &proto.BatchResponse{}
+	bReply.Timestamp = bArgs.Timestamp
+	var rErr error
+	for i := range bArgs.Requests {
+		// Execute the command.
+		args := bArgs.Requests[i].GetValue().(proto.Request)
+		reply, intents, err := r.executeCmd(r.rm.Engine(), nil, args)
+
+		// Handle any intents which were skipped over the course of execution.
+		r.handleSkippedIntents(args, intents) // even on error
+
+		// Add the response to the batch.
+		if err == nil {
+			bReply.Add(reply)
+		} else {
+			bReply = &proto.BatchResponse{} // reset
+			rErr = err
+			break
+		}
+	}
+
+	// Remove keys from command queue.
+	r.endCmds(cmdKeys, bArgs, rErr)
+
+	return bReply, rErr
 }
 
 // addWriteCmd first adds the keys affected by this command as pending writes
@@ -653,7 +763,7 @@ func (r *Replica) addReadOnlyCmd(ctx context.Context, args proto.Request) (proto
 // error returned. If a WaitGroup is supplied, it is signaled when the command
 // enters Raft or the function returns with a preprocessing error, whichever
 // happens earlier.
-func (r *Replica) addWriteCmd(ctx context.Context, args proto.Request, wg *sync.WaitGroup) (proto.Response, error) {
+func (r *Replica) addWriteCmd(ctx context.Context, bArgs *proto.BatchRequest, wg *sync.WaitGroup) (*proto.BatchResponse, error) {
 	signal := func() {
 		if wg != nil {
 			wg.Done()
@@ -665,26 +775,30 @@ func (r *Replica) addWriteCmd(ctx context.Context, args proto.Request, wg *sync.
 	// early returns do not skip this.
 	defer signal()
 
-	header := args.Header()
-
-	if err := r.checkCmdHeader(args.Header()); err != nil {
+	if err := r.checkCmdHeader(bArgs.Header()); err != nil {
+		return nil, err
+	}
+	if err := r.checkBatchRequest(bArgs); err != nil {
 		return nil, err
 	}
 
 	trace := tracer.FromCtx(ctx)
 
 	// Add the write to the command queue to gate subsequent overlapping
-	// Commands until this command completes. Note that this must be
+	// commands until this command completes. Note that this must be
 	// done before getting the max timestamp for the key(s), as
 	// timestamp cache is only updated after preceding commands have
 	// been run to successful completion.
 	qDone := trace.Epoch("command queue")
-	cmdKey := r.beginCmd(header, false)
+	cmdKeys, err := r.beginCmds(bArgs)
 	qDone()
+	if err != nil {
+		return nil, err
+	}
 
 	// This replica must have leader lease to process a write.
-	if err := r.redirectOnOrAcquireLeaderLease(trace, header.Timestamp); err != nil {
-		r.endCmd(cmdKey, args, err, false /* !readOnly */)
+	if err := r.redirectOnOrAcquireLeaderLease(trace, bArgs.Timestamp); err != nil {
+		r.endCmds(cmdKeys, bArgs, err)
 		return nil, err
 	}
 
@@ -696,56 +810,64 @@ func (r *Replica) addWriteCmd(ctx context.Context, args proto.Request, wg *sync.
 	// writes, send WriteTooOldError; for reads, update the write's
 	// timestamp. When the write returns, the updated timestamp will
 	// inform the final commit timestamp.
-	if usesTimestampCache(args) {
-		r.Lock()
-		rTS, wTS := r.tsCache.GetMax(header.Key, header.EndKey, header.Txn.GetID())
-		r.Unlock()
+	//
+	// Find the maximum timestamp required to satisfy all requests in
+	// the batch and then apply that to all requests.
+	r.Lock()
+	for i := range bArgs.Requests {
+		args := bArgs.Requests[i].GetValue().(proto.Request)
+		header := args.Header()
+		if usesTimestampCache(args) {
+			rTS, wTS := r.tsCache.GetMax(header.Key, header.EndKey, header.Txn.GetID())
 
-		// Always push the timestamp forward if there's been a read which
-		// occurred after our txn timestamp.
-		if !rTS.Less(header.Timestamp) {
-			header.Timestamp = rTS.Next()
-		}
-		// If there's a newer write timestamp...
-		if !wTS.Less(header.Timestamp) {
-			// If we're in a txn, we still go ahead and try the write since
-			// we want to avoid restarting the transaction in the event that
-			// there isn't an intent or the intent can be pushed by us.
-			//
-			// If we're not in a txn, it's trivial to just advance our timestamp.
-			if header.Txn == nil {
-				header.Timestamp = wTS.Next()
+			// Always push the timestamp forward if there's been a read which
+			// occurred after our txn timestamp.
+			if !rTS.Less(bArgs.Timestamp) {
+				bArgs.Timestamp = rTS.Next()
+			}
+			// If there's a newer write timestamp...
+			if !wTS.Less(bArgs.Timestamp) {
+				// If we're in a txn, we still go ahead and try the write since
+				// we want to avoid restarting the transaction in the event that
+				// there isn't an intent or the intent can be pushed by us.
+				//
+				// If we're not in a txn, it's trivial to just advance our timestamp.
+				if header.Txn == nil {
+					bArgs.Timestamp = wTS.Next()
+				}
 			}
 		}
 	}
+	// Make sure the batch timestamp is copied consistently to each request.
+	for i := range bArgs.Requests {
+		args := bArgs.Requests[i].GetValue().(proto.Request)
+		args.Header().Timestamp = bArgs.Timestamp
+	}
+	r.Unlock()
 
 	defer trace.Epoch("raft")()
 
-	errChan, pendingCmd := r.proposeRaftCommand(ctx, args)
+	errChan, pendingCmd := r.proposeRaftCommand(ctx, bArgs)
 
 	signal()
 
 	// First wait for raft to commit or abort the command.
-	var err error
-	var reply proto.Response
+	var bReply *proto.BatchResponse
 	if err = <-errChan; err == nil {
 		// Next if the command was committed, wait for the range to apply it.
 		respWithErr := <-pendingCmd.done
-		reply, err = respWithErr.Reply, respWithErr.Err
+		bReply, err = respWithErr.Reply, respWithErr.Err
 	}
 
-	// As for reads, update timestamp cache with the timestamp
-	// of this write on success. This ensures a strictly higher
-	// timestamp for successive writes to the same key or key range.
-	r.endCmd(cmdKey, args, err, false /* !readOnly */)
-	return reply, err
+	r.endCmds(cmdKeys, bArgs, err)
+	return bReply, err
 }
 
 // proposeRaftCommand prepares necessary pending command struct and
 // initializes a client command ID if one hasn't been. It then
 // proposes the command to Raft and returns the error channel and
 // pending command struct for receiving.
-func (r *Replica) proposeRaftCommand(ctx context.Context, args proto.Request) (<-chan error, *pendingCmd) {
+func (r *Replica) proposeRaftCommand(ctx context.Context, bArgs *proto.BatchRequest) (<-chan error, *pendingCmd) {
 	pendingCmd := &pendingCmd{
 		ctx:  ctx,
 		done: make(chan proto.ResponseWithError, 1),
@@ -753,12 +875,9 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, args proto.Request) (<
 	raftCmd := proto.RaftCommand{
 		RangeID:      r.Desc().RangeID,
 		OriginNodeID: r.rm.RaftNodeID(),
+		Cmd:          bArgs,
 	}
-	cmdID := args.Header().GetOrCreateCmdID(r.rm.Clock().PhysicalNow())
-	ok := raftCmd.Cmd.SetValue(args)
-	if !ok {
-		log.Fatalc(ctx, "unknown command type %T", args)
-	}
+	cmdID := bArgs.GetOrCreateCmdID(r.rm.Clock().PhysicalNow())
 	idKey := makeCmdIDKey(cmdID)
 	r.Lock()
 	r.pendingCmds[idKey] = pendingCmd
@@ -782,8 +901,6 @@ func (r *Replica) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto
 	delete(r.pendingCmds, idKey)
 	r.Unlock()
 
-	args := raftCmd.Cmd.GetValue().(proto.Request)
-	var reply proto.Response
 	var ctx context.Context
 	if cmd != nil {
 		// We initiated this command, so use the caller-supplied context.
@@ -793,18 +910,18 @@ func (r *Replica) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto
 		ctx = r.context()
 	}
 
-	execDone := tracer.FromCtx(ctx).Epoch(fmt.Sprintf("applying %s", args.Method()))
+	execDone := tracer.FromCtx(ctx).Epoch(fmt.Sprintf("applying batch"))
 	// applyRaftCommand will return "expected" errors, but may also indicate
 	// replica corruption (as of now, signaled by a replicaCorruptionError).
 	// We feed its return through maybeSetCorrupt to act when that happens.
-	reply, err := r.applyRaftCommand(ctx, index, proto.RaftNodeID(raftCmd.OriginNodeID), args)
+	bReply, err := r.applyRaftCommand(ctx, index, proto.RaftNodeID(raftCmd.OriginNodeID), raftCmd.Cmd)
 	err = r.maybeSetCorrupt(err)
 	execDone()
 
 	if cmd != nil {
-		cmd.done <- proto.ResponseWithError{Reply: reply, Err: err}
+		cmd.done <- proto.ResponseWithError{Reply: bReply, Err: err}
 	} else if err != nil && log.V(1) {
-		log.Errorc(r.context(), "error executing raft command %s: %s", args.Method(), err)
+		log.Errorc(r.context(), "error executing raft command: %s", err)
 	}
 
 	return err
@@ -814,7 +931,8 @@ func (r *Replica) processRaftCommand(idKey cmdIDKey, index uint64, raftCmd proto
 // underlying state machine (i.e. the engine).
 // When certain critical operations fail, a replicaCorruptionError may be
 // returned and must be handled by the caller.
-func (r *Replica) applyRaftCommand(ctx context.Context, index uint64, originNode proto.RaftNodeID, args proto.Request) (proto.Response, error) {
+func (r *Replica) applyRaftCommand(ctx context.Context, index uint64, originNode proto.RaftNodeID,
+	bArgs *proto.BatchRequest) (*proto.BatchResponse, error) {
 	if index <= 0 {
 		log.Fatalc(ctx, "raft command index is <= 0")
 	}
@@ -828,7 +946,7 @@ func (r *Replica) applyRaftCommand(ctx context.Context, index uint64, originNode
 	// Call the helper, which returns a batch containing data written
 	// during command execution and any associated error.
 	ms := engine.MVCCStats{}
-	batch, reply, rErr := r.applyRaftCommandInBatch(ctx, index, originNode, args, &ms)
+	batch, bReply, rErr := r.applyRaftCommandInBatch(ctx, index, originNode, bArgs, &ms)
 	defer batch.Close()
 
 	// Advance the last applied index and commit the batch.
@@ -844,61 +962,42 @@ func (r *Replica) applyRaftCommand(ctx context.Context, index uint64, originNode
 
 	// On successful write commands, flush to event feed, and handle other
 	// write-related triggers including splitting and config gossip updates.
-	if rErr == nil && proto.IsWrite(args) {
+	if rErr == nil && proto.IsWrite(bArgs) {
 		// Publish update to event feed.
-		r.rm.EventFeed().updateRange(r, args.Method(), &ms)
+		// TODO(spencer): we should be sending feed updates for each part
+		// of the batch.
+		r.rm.EventFeed().updateRange(r, bArgs.Method(), &ms)
 		// If the commit succeeded, potentially add range to split queue.
 		r.maybeAddToSplitQueue()
 		// Maybe update gossip configs if the command is not part of a transaction.
 		// If the command is part of an uncommitted transaction, we rely on the
 		// periodic configGossipInterval loop since we will not see the update
 		// until the transaction is committed.
-		if key := args.Header().Key; key.Less(keys.SystemMax) && args.Header().Txn == nil {
+		if key := bArgs.Key; key.Less(keys.SystemMax) && bArgs.Txn == nil {
 			r.maybeGossipConfigs(func(configPrefix proto.Key) bool {
 				return bytes.HasPrefix(key, configPrefix)
 			})
 		}
 	}
 
-	return reply, rErr
+	return bReply, rErr
 }
 
 // applyRaftCommandInBatch executes the command in a batch engine and
 // returns the batch containing the results. The caller is responsible
 // for committing the batch, even on error.
 func (r *Replica) applyRaftCommandInBatch(ctx context.Context, index uint64, originNode proto.RaftNodeID,
-	args proto.Request, ms *engine.MVCCStats) (engine.Engine, proto.Response, error) {
+	bArgs *proto.BatchRequest, ms *engine.MVCCStats) (engine.Engine, *proto.BatchResponse, error) {
 	// Create a new batch for the command to ensure all or nothing semantics.
 	batch := r.rm.Engine().NewBatch()
 
-	if lease := r.getLease(); args.Method() != proto.LeaderLease &&
-		(!lease.OwnedBy(originNode) || !lease.Covers(args.Header().Timestamp)) {
-		// Verify the leader lease is held, unless this command is trying to
-		// obtain it. Any other Raft command has had the leader lease held
-		// by the replica at proposal time, but this may no longer be the case.
-		// Corruption aside, the most likely reason is a leadership change (the
-		// most recent leader assumes responsibility for all past timestamps as
-		// well). In that case, it's not valid to go ahead with the execution:
-		// Writes must be aware of the last time the mutated key was read, and
-		// since reads are served locally by the lease holder without going
-		// through Raft, a read which was not taken into account may have been
-		// served. Hence, we must retry at the current leader.
-		//
-		// It's crucial that we don't update the response cache for the error
-		// returned below since the request is going to be retried with the
-		// same ClientCmdID and would get the distributed sender stuck in an
-		// infinite loop, retrieving a stale NotLeaderError over and over
-		// again, even when proposing at the correct replica.
-		return batch, nil, r.newNotLeaderError(lease, originNode)
-	}
-
-	// Check the response cache to ensure idempotency.
-	if proto.IsWrite(args) {
-		if replyWithErr, readErr := r.respCache.GetResponse(batch, args.Header().CmdID); readErr != nil {
+	// Check the response cache for this batch to ensure idempotency.
+	if proto.IsWrite(bArgs) {
+		if replyWithErr, readErr := r.respCache.GetResponse(batch, bArgs.CmdID); readErr != nil {
 			return batch, nil, newReplicaCorruptionError(util.Errorf("could not read from response cache"), readErr)
 		} else if replyWithErr.Reply != nil {
 			if log.V(1) {
-				log.Infoc(ctx, "found response cache entry for %+v", args.Header().CmdID)
+				log.Infoc(ctx, "found response cache entry for %+v", bArgs.CmdID)
 			}
 			// We successfully read from the response cache, so return whatever error
 			// was present in the cached entry (if any).
@@ -906,16 +1005,61 @@ func (r *Replica) applyRaftCommandInBatch(ctx context.Context, index uint64, ori
 		}
 	}
 
-	// Execute the command.
-	reply, intents, rErr := r.executeCmd(batch, ms, args)
+	bReply := &proto.BatchResponse{}
+	bReply.Timestamp = bArgs.Timestamp
+	var rErr error
+	for i := range bArgs.Requests {
+		args := bArgs.Requests[i].GetValue().(proto.Request)
+
+		if lease := r.getLease(); args.Method() != proto.LeaderLease &&
+			(!lease.OwnedBy(originNode) || !lease.Covers(args.Header().Timestamp)) {
+			// Verify the leader lease is held, unless this command is trying to
+			// obtain it. Any other Raft command has had the leader lease held
+			// by the replica at proposal time, but this may no longer be the case.
+			// Corruption aside, the most likely reason is a leadership change (the
+			// most recent leader assumes responsibility for all past timestamps as
+			// well). In that case, it's not valid to go ahead with the execution:
+			// Writes must be aware of the last time the mutated key was read, and
+			// since reads are served locally by the lease holder without going
+			// through Raft, a read which was not taken into account may have been
+			// served. Hence, we must retry at the current leader.
+			//
+			// It's crucial that we don't update the response cache for the error
+			// returned below since the request is going to be retried with the
+			// same ClientCmdID and would get the distributed sender stuck in an
+			// infinite loop, retrieving a stale NotLeaderError over and over
+			// again, even when proposing at the correct replica.
+			return batch, nil, r.newNotLeaderError(lease, originNode)
+		}
+
+		// Execute the command.
+		reply, intents, err := r.executeCmd(batch, ms, args)
+
+		// On the replica on which this command originated, resolve skipped intents
+		// asynchronously - even on failure.
+		if originNode == r.rm.RaftNodeID() {
+			r.handleSkippedIntents(args, intents)
+		}
+
+		// Add the response to the batch.
+		if err == nil {
+			reply.Header().Timestamp = args.Header().Timestamp
+			bReply.Add(reply)
+		} else {
+			bReply = &proto.BatchResponse{} // reset
+			rErr = err
+			break
+		}
+	}
+
 	// Regardless of error, add result to the response cache if this is
 	// a write method. This must be done as part of the execution of
 	// raft commands so that every replica maintains the same responses
 	// to continue request idempotence, even if leadership changes.
-	if proto.IsWrite(args) {
+	if proto.IsWrite(bArgs) {
 		if rErr == nil {
 			// If command was successful, flush the MVCC stats to the batch.
-			if err := r.stats.MergeMVCCStats(batch, ms, args.Header().Timestamp.WallTime); err != nil {
+			if err := r.stats.MergeMVCCStats(batch, ms, bArgs.Timestamp.WallTime); err != nil {
 				log.Fatalc(ctx, "setting mvcc stats in a batch should never fail: %s", err)
 			}
 		} else {
@@ -924,22 +1068,13 @@ func (r *Replica) applyRaftCommandInBatch(ctx context.Context, index uint64, ori
 			batch.Close()
 			batch = r.rm.Engine().NewBatch()
 		}
-		if reply == nil {
-			reply = args.CreateReply()
-		}
-		if err := r.respCache.PutResponse(batch, args.Header().CmdID,
-			proto.ResponseWithError{Reply: reply, Err: rErr}); err != nil {
+		if err := r.respCache.PutResponse(batch, bArgs.CmdID,
+			proto.ResponseWithError{Reply: bReply, Err: rErr}); err != nil {
 			log.Fatalc(ctx, "putting a response cache entry in a batch should never fail: %s", err)
 		}
 	}
 
-	// On the replica on which this command originated, resolve skipped intents
-	// asynchronously - even on failure.
-	if originNode == r.rm.RaftNodeID() {
-		r.handleSkippedIntents(args, intents)
-	}
-
-	return batch, reply, rErr
+	return batch, bReply, rErr
 }
 
 // getLeaseForGossip tries to obtain a leader lease. Only one of the replicas
@@ -1179,67 +1314,67 @@ func (r *Replica) resolveIntents(ctx context.Context, intents []proto.Intent) {
 	trace := tracer.FromCtx(ctx)
 	tracer.ToCtx(ctx, nil) // we're doing async stuff below; those need new traces
 	trace.Event("resolving intents [async]")
-	var wg sync.WaitGroup
 
 	bArgs := &proto.BatchRequest{}
+	bArgsLocal := &proto.BatchRequest{}
 	for i := range intents {
 		intent := intents[i] // avoids a race in `i, intent := range ...`
 		var resolveArgs proto.Request
 		var local bool // whether this intent lives on this Range
 		{
 			header := proto.RequestHeader{
-				// Use the pushee's timestamp, which might be lower than the
-				// pusher's request timestamp. No need to push the intent higher
-				// than the pushee's txn!
-				Timestamp: intent.Txn.Timestamp,
-				Key:       intent.Key,
-				EndKey:    intent.EndKey,
-				Txn:       &intent.Txn,
+				Key:    intent.Key,
+				EndKey: intent.EndKey,
 			}
 
 			if len(intent.EndKey) == 0 {
-				resolveArgs = &proto.ResolveIntentRequest{RequestHeader: header}
+				resolveArgs = &proto.ResolveIntentRequest{
+					RequestHeader: header,
+					IntentTxn:     intent.Txn,
+				}
 				local = r.ContainsKey(intent.Key)
 			} else {
-				resolveArgs = &proto.ResolveIntentRangeRequest{RequestHeader: header}
+				resolveArgs = &proto.ResolveIntentRangeRequest{
+					RequestHeader: header,
+					IntentTxn:     intent.Txn,
+				}
 				local = r.ContainsKeyRange(intent.Key, intent.EndKey)
 			}
 		}
 
 		// If the intent isn't (completely) local, we'll need to send an external request.
 		// We'll batch them all up and send at the end.
-		if !local {
+		if local {
+			bArgsLocal.Add(resolveArgs)
+		} else {
 			bArgs.Add(resolveArgs)
-			continue
-		}
-
-		// If it is local, it goes directly into Raft.
-		// TODO(tschottdorf): this may be premature optimization. Consider just
-		// treating everything as an external request. This means having to
-		// wait for complete execution of the command (whereas now we just wait
-		// for proposition) and some more overhead sending things around.
-		wg.Add(1)
-		action := func() {
-			// Trace this under the ID of the intent owner.
-			ctx := tracer.ToCtx(ctx, r.rm.Tracer().NewTrace(resolveArgs.Header().Txn))
-			if _, err := r.addWriteCmd(ctx, resolveArgs, &wg); err != nil && log.V(1) {
-				log.Warningc(ctx, "resolve for key %s failed: %s", intent.Key, err)
-			}
-		}
-		if !r.rm.Stopper().RunAsyncTask(action) {
-			// Still run the task. Our caller already has a task and going async
-			// here again is merely for performance, but some intents need to
-			// be resolved because they might block other tasks. See #1684.
-			// Note that handleSkippedIntents has a TODO in case #1684 comes
-			// back.
-			action()
 		}
 	}
+
+	// The local batch goes directly to Raft.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	action := func() {
+		// Trace this under the ID of the intent owner.
+		ctx := tracer.ToCtx(ctx, r.rm.Tracer().NewTrace(bArgs.Header()))
+		if _, err := r.addWriteCmd(ctx, bArgsLocal, &wg); err != nil && log.V(1) {
+			log.Warningc(ctx, "batch resolve failed: %s", err)
+		}
+	}
+	if !r.rm.Stopper().RunAsyncTask(action) {
+		// Still run the task. Our caller already has a task and going async
+		// here again is merely for performance, but some intents need to
+		// be resolved because they might block other tasks. See #1684.
+		// Note that handleSkippedIntents has a TODO in case #1684 comes
+		// back.
+		action()
+	}
+
 	// Resolve all of the intents which aren't local to the Range. This is a
 	// no-op if all are local.
 	b := &client.Batch{}
 	b.InternalAddCall(proto.Call{Args: bArgs, Reply: &proto.BatchResponse{}})
-	action := func() {
+	action = func() {
 		// TODO(tschottdorf): no tracing here yet. Probably useful at some point,
 		// but needs a) the corresponding interface and b) facilities for tracing
 		// multiple tracees at the same time (batch full of possibly individual
@@ -1256,8 +1391,8 @@ func (r *Replica) resolveIntents(ctx context.Context, intents []proto.Intent) {
 		action()
 	}
 
-	// Wait until all the local `ResolveIntent`s have been submitted to raft.
-	// No-op if all were external.
+	// Wait until the local ResolveIntents batch has been submitted to
+	// raft. No-op if all were non-local.
 	wg.Wait()
 }
 

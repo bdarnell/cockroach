@@ -1442,8 +1442,7 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *proto.WriteI
 // channel when it is committed or aborted (but note that committed does
 // mean that it has been applied to the range yet).
 func (s *Store) ProposeRaftCommand(idKey cmdIDKey, cmd proto.RaftCommand) <-chan error {
-	value := cmd.Cmd.GetValue()
-	if value == nil {
+	if cmd.Cmd == nil {
 		panic("proposed a nil command")
 	}
 	// Lazily create group. TODO(bdarnell): make this non-lazy
@@ -1458,16 +1457,21 @@ func (s *Store) ProposeRaftCommand(idKey cmdIDKey, cmd proto.RaftCommand) <-chan
 	if err != nil {
 		log.Fatal(err)
 	}
-	etr, ok := value.(*proto.EndTransactionRequest)
-	if ok && etr.InternalCommitTrigger != nil &&
-		etr.InternalCommitTrigger.ChangeReplicasTrigger != nil {
-		// EndTransactionRequest with a ChangeReplicasTrigger is special because raft
-		// needs to understand it; it cannot simply be an opaque command.
-		crt := etr.InternalCommitTrigger.ChangeReplicasTrigger
-		return s.multiraft.ChangeGroupMembership(cmd.RangeID, string(idKey),
-			changeTypeInternalToRaft[crt.ChangeType],
-			proto.MakeRaftNodeID(crt.NodeID, crt.StoreID),
-			data)
+	for i := range cmd.Cmd.Requests {
+		args := cmd.Cmd.Requests[i].GetValue().(proto.Request)
+		etr, ok := args.(*proto.EndTransactionRequest)
+		if ok && etr.InternalCommitTrigger != nil && etr.InternalCommitTrigger.ChangeReplicasTrigger != nil {
+			if len(cmd.Cmd.Requests) != 1 {
+				panic("EndTransaction should only ever occur by itself in a batch")
+			}
+			// EndTransactionRequest with a ChangeReplicasTrigger is special because raft
+			// needs to understand it; it cannot simply be an opaque command.
+			crt := etr.InternalCommitTrigger.ChangeReplicasTrigger
+			return s.multiraft.ChangeGroupMembership(cmd.RangeID, string(idKey),
+				changeTypeInternalToRaft[crt.ChangeType],
+				proto.MakeRaftNodeID(crt.NodeID, crt.StoreID),
+				data)
+		}
 	}
 	return s.multiraft.SubmitCommand(cmd.RangeID, string(idKey), data)
 }
@@ -1497,8 +1501,7 @@ func (s *Store) processRaft() {
 						log.Fatal(err)
 					}
 					if log.V(6) {
-						log.Infof("store %s: new committed %s command at index %d",
-							s, cmd.Cmd.GetValue().(proto.Request).Method(), e.Index)
+						log.Infof("store %s: new committed command at index %d", s, e.Index)
 					}
 
 				case *multiraft.EventMembershipChangeCommitted:

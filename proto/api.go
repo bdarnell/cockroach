@@ -73,6 +73,11 @@ func IsReadOnly(args Request) bool {
 	return IsRead(args) && !IsWrite(args)
 }
 
+// IsWriteOnly returns true if the request only requires write permissions.
+func IsWriteOnly(args Request) bool {
+	return !IsRead(args) && IsWrite(args)
+}
+
 // IsTransactionWrite returns true if the request produces write
 // intents when used within a transaction.
 func IsTransactionWrite(args Request) bool {
@@ -83,6 +88,11 @@ func IsTransactionWrite(args Request) bool {
 // a start and an end key.
 func IsRange(args Request) bool {
 	return (args.flags() & isRange) != 0
+}
+
+// CanBatch returns true if the request type can be part of a batch request.
+func CanBatch(args Request) bool {
+	return IsRead(args) || IsWrite(args)
 }
 
 // Request is an interface for RPC requests.
@@ -257,7 +267,7 @@ func (rh *ResponseHeader) GoError() error {
 }
 
 // SetGoError converts the specified type into either one of the proto-
-// defined error types or into a Error for all other Go errors.
+// defined error types or into an Error for all other Go errors.
 func (rh *ResponseHeader) SetGoError(err error) {
 	if err == nil {
 		rh.Error = nil
@@ -295,8 +305,8 @@ func (sr *ReverseScanResponse) Verify(req Request) error {
 	return nil
 }
 
-// Add adds a request to the batch request. The batch inherits
-// the key range of the first request added to it.
+// Add adds a request to the batch request. The batch key range is
+// expanded to include the key ranges of all requests which it comprises.
 //
 // TODO(spencer): batches should include a list of key ranges
 //   representing the constituent requests.
@@ -305,8 +315,12 @@ func (br *BatchRequest) Add(args Request) {
 	if !union.SetValue(args) {
 		panic(fmt.Sprintf("unable to add %T to batch request", args))
 	}
-	if br.Key == nil {
+	if br.Key == nil || !br.Key.Less(args.Header().Key) {
 		br.Key = args.Header().Key
+	} else if br.EndKey.Less(args.Header().Key) && !br.Key.Equal(args.Header().Key) {
+		br.EndKey = args.Header().Key
+	}
+	if br.EndKey == nil || (args.Header().EndKey != nil && br.EndKey.Less(args.Header().EndKey)) {
 		br.EndKey = args.Header().EndKey
 	}
 	br.Requests = append(br.Requests, union)
@@ -513,4 +527,12 @@ func (*ResolveIntentRangeRequest) flags() int { return isWrite | isRange }
 func (*MergeRequest) flags() int              { return isWrite }
 func (*TruncateLogRequest) flags() int        { return isWrite }
 func (*LeaderLeaseRequest) flags() int        { return isWrite }
-func (*BatchRequest) flags() int              { return isWrite }
+
+func (b *BatchRequest) flags() int {
+	var flags int
+	for _, union := range b.Requests {
+		args := union.GetValue().(Request)
+		flags |= args.flags()
+	}
+	return flags
+}

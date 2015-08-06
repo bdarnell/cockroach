@@ -282,7 +282,8 @@ func TestRangeContains(t *testing.T) {
 }
 
 func setLeaderLease(t *testing.T, r *Replica, l *proto.Lease) {
-	args := &proto.LeaderLeaseRequest{Lease: *l}
+	args := &proto.BatchRequest{}
+	args.Add(&proto.LeaderLeaseRequest{Lease: *l})
 	errChan, pendingCmd := r.proposeRaftCommand(r.context(), args)
 	var err error
 	if err = <-errChan; err == nil {
@@ -360,9 +361,12 @@ func TestApplyCmdLeaseError(t *testing.T) {
 	tc.Start(t)
 	defer tc.Stop()
 
+	bArgs := proto.BatchRequest{}
+	bArgs.Timestamp = tc.clock.Now()
 	pArgs := putArgs(proto.Key("a"), []byte("asd"),
 		tc.rng.Desc().RangeID, tc.store.StoreID())
-	pArgs.Timestamp = tc.clock.Now()
+	pArgs.Timestamp = bArgs.Timestamp
+	bArgs.Add(&pArgs)
 
 	// Lose the lease.
 	start := tc.rng.getLease().Expiration.Add(1, 0)
@@ -374,7 +378,7 @@ func TestApplyCmdLeaseError(t *testing.T) {
 	})
 
 	// Submit a proposal to Raft.
-	errChan, pendingCmd := tc.rng.proposeRaftCommand(tc.rng.context(), &pArgs)
+	errChan, pendingCmd := tc.rng.proposeRaftCommand(tc.rng.context(), &bArgs)
 	if err := <-errChan; err != nil {
 		t.Fatal(err)
 	}
@@ -1317,7 +1321,7 @@ func TestRangeUseTSCache(t *testing.T) {
 }
 
 // TestRangeNoTSCacheInconsistent verifies that the timestamp cache
-// is no affected by inconsistent reads.
+// is not affected by inconsistent reads.
 func TestRangeNoTSCacheInconsistent(t *testing.T) {
 	defer leaktest.AfterTest(t)
 	tc := testContext{}
@@ -1391,7 +1395,7 @@ func TestRangeNoTSCacheUpdateOnFailure(t *testing.T) {
 }
 
 // TestRangeNoTimestampIncrementWithinTxn verifies that successive
-// read the write commands within the same transaction do not cause
+// read and write commands, within the same transaction, do not cause
 // the write to receive an incremented timestamp.
 func TestRangeNoTimestampIncrementWithinTxn(t *testing.T) {
 	defer leaktest.AfterTest(t)
@@ -1426,13 +1430,23 @@ func TestRangeNoTimestampIncrementWithinTxn(t *testing.T) {
 		t.Errorf("expected timestamp to remain %s; got %s", pArgs.Timestamp, pReply.Timestamp)
 	}
 
+	// Resolve the intent.
+	rArgs := &proto.ResolveIntentRequest{
+		RequestHeader: *pArgs.Header(),
+		IntentTxn:     *pArgs.Txn,
+	}
+	rArgs.IntentTxn.Status = proto.COMMITTED
+	if _, err := tc.rng.AddCmd(tc.rng.context(), rArgs); err != nil {
+		t.Fatal(err)
+	}
+
 	// Finally, try a non-transactional write and verify timestamp is incremented.
 	pArgs.Txn = nil
 	expTS := pArgs.Timestamp
 	expTS.Logical++
 
-	if reply, err = tc.rng.AddCmd(tc.rng.context(), &pArgs); err == nil {
-		t.Errorf("expected write intent error")
+	if reply, err = tc.rng.AddCmd(tc.rng.context(), &pArgs); err != nil {
+		t.Errorf("unexpected error: %s", err)
 	}
 	pReply = reply.(*proto.PutResponse)
 	if !pReply.Timestamp.Equal(expTS) {
@@ -1538,11 +1552,13 @@ func TestRangeResponseCacheStoredError(t *testing.T) {
 
 	cmdID := proto.ClientCmdID{WallTime: 1, Random: 1}
 	// Write an error into the response cache.
-	pastReply := proto.IncrementResponse{}
+	incReply := proto.IncrementResponse{}
+	bReply := proto.BatchResponse{}
+	bReply.Add(&incReply)
 	pastError := errors.New("boom")
 	var expError error = &proto.Error{Message: pastError.Error()}
 	_ = tc.rng.respCache.PutResponse(tc.engine, cmdID,
-		proto.ResponseWithError{Reply: &pastReply, Err: pastError})
+		proto.ResponseWithError{Reply: &bReply, Err: pastError})
 
 	args := incrementArgs([]byte("a"), 1, 1, tc.store.StoreID())
 	args.CmdID = cmdID
@@ -2243,15 +2259,14 @@ func TestRangeResolveIntentRange(t *testing.T) {
 	// Resolve the intents.
 	rArgs := &proto.ResolveIntentRangeRequest{
 		RequestHeader: proto.RequestHeader{
-			Timestamp: txn.Timestamp,
-			Key:       proto.Key("a"),
-			EndKey:    proto.Key("c"),
-			RangeID:   tc.rng.Desc().RangeID,
-			Replica:   proto.Replica{StoreID: tc.store.StoreID()},
-			Txn:       txn,
+			Key:     proto.Key("a"),
+			EndKey:  proto.Key("c"),
+			RangeID: tc.rng.Desc().RangeID,
+			Replica: proto.Replica{StoreID: tc.store.StoreID()},
 		},
+		IntentTxn: *txn,
 	}
-	rArgs.Txn.Status = proto.COMMITTED
+	rArgs.IntentTxn.Status = proto.COMMITTED
 	if _, err := tc.rng.AddCmd(tc.rng.context(), rArgs); err != nil {
 		t.Fatal(err)
 	}
@@ -2315,14 +2330,13 @@ func TestRangeStatsComputation(t *testing.T) {
 	// Resolve the 2nd value.
 	rArgs := &proto.ResolveIntentRequest{
 		RequestHeader: proto.RequestHeader{
-			Timestamp: pArgs.Txn.Timestamp,
-			Key:       pArgs.Key,
-			RangeID:   tc.rng.Desc().RangeID,
-			Replica:   proto.Replica{StoreID: tc.store.StoreID()},
-			Txn:       pArgs.Txn,
+			Key:     pArgs.Key,
+			RangeID: tc.rng.Desc().RangeID,
+			Replica: proto.Replica{StoreID: tc.store.StoreID()},
 		},
+		IntentTxn: *pArgs.Txn,
 	}
-	rArgs.Txn.Status = proto.COMMITTED
+	rArgs.IntentTxn.Status = proto.COMMITTED
 
 	if _, err := tc.rng.AddCmd(tc.rng.context(), rArgs); err != nil {
 		t.Fatal(err)
@@ -2796,15 +2810,14 @@ func TestRangeLookupUseReverseScan(t *testing.T) {
 	// Resolve the intents.
 	rArgs := &proto.ResolveIntentRangeRequest{
 		RequestHeader: proto.RequestHeader{
-			Timestamp: txn.Timestamp,
-			Key:       keys.RangeMetaKey(proto.Key("a")),
-			EndKey:    keys.RangeMetaKey(proto.Key("z")),
-			RangeID:   tc.rng.Desc().RangeID,
-			Replica:   proto.Replica{StoreID: tc.store.StoreID()},
-			Txn:       txn,
+			Key:     keys.RangeMetaKey(proto.Key("a")),
+			EndKey:  keys.RangeMetaKey(proto.Key("z")),
+			RangeID: tc.rng.Desc().RangeID,
+			Replica: proto.Replica{StoreID: tc.store.StoreID()},
 		},
+		IntentTxn: *txn,
 	}
-	rArgs.Txn.Status = proto.COMMITTED
+	rArgs.IntentTxn.Status = proto.COMMITTED
 	if _, err := tc.rng.AddCmd(tc.rng.context(), rArgs); err != nil {
 		t.Fatal(err)
 	}
