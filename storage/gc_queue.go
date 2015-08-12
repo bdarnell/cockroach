@@ -226,7 +226,7 @@ func (gcq *gcQueue) process(now proto.Timestamp, repl *Replica) error {
 	var wg sync.WaitGroup
 	for _, txn := range txnMap {
 		wg.Add(1)
-		go gcq.pushTxn(repl, now, txn, updateOldestIntent, &wg)
+		go pushTxn(repl, now, txn, updateOldestIntent, &wg)
 	}
 	wg.Wait()
 
@@ -271,7 +271,7 @@ func (gcq *gcQueue) timer() time.Duration {
 // cannot be aborted, the oldestIntentNanos value is atomically
 // updated to the min of oldestIntentNanos and the intent's
 // timestamp. The wait group is signaled on completion.
-func (gcq *gcQueue) pushTxn(repl *Replica, now proto.Timestamp, txn *proto.Transaction, updateOldestIntent func(int64), wg *sync.WaitGroup) {
+func pushTxn(repl *Replica, now proto.Timestamp, txn *proto.Transaction, updateOldestIntent func(int64), wg *sync.WaitGroup) {
 	defer wg.Done() // signal wait group always on completion
 	if log.V(1) {
 		log.Infof("pushing txn %s ts=%s", txn, txn.OrigTimestamp)
