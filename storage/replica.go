@@ -1063,13 +1063,33 @@ func (r *Replica) maybeGossipConfigsLocked(match func(configPrefix proto.Key) bo
 	}
 }
 
-func (r *Replica) handleSkippedIntents(args proto.Request, intents []proto.Intent) {
+// handleSkippedIntents processes intents which have been returned as a
+// side-effect of an inconsistent operation. A best-effort attempt to resolve
+// them is made, but intents for which the command queue would block a read
+// (indicating that a mutating command for that key is already in flight) are
+// skipped. The number of intents for which a resolution is attempted is
+// returned, and the intents slice will be reordered with those attempts at the
+// front.
+func (r *Replica) handleSkippedIntents(args proto.Request, intents []proto.Intent) int {
 	if len(intents) == 0 {
-		return
+		return 0
 	}
 
 	ctx := r.context()
 	stopper := r.rm.Stopper()
+	r.RLock()
+	for i := len(intents) - 1; i >= 0; i-- {
+		if r.cmdQ.GetNum(intents[i].Key, nil, false) > 0 {
+			if log.V(1) {
+				log.Infof("not resolving skipped intent at %q; has outstanding write",
+					intents[i].Key)
+			}
+			// Move current element to back and shrink slice by one.
+			l := len(intents) - 1
+			intents[i], intents = intents[l], intents[:l]
+		}
+	}
+	r.RUnlock()
 	// TODO(tschottdorf): There's a chance that #1684 will make a comeback
 	// since intent resolution on commit has since moved to EndTransaction,
 	// which returns (some of) them as skipped intents. If so, need to resolve
@@ -1080,9 +1100,10 @@ func (r *Replica) handleSkippedIntents(args proto.Request, intents []proto.Inten
 			Intents: intents,
 		}, r, args, proto.CLEANUP_TXN)
 		if wiErr, ok := err.(*proto.WriteIntentError); !ok || wiErr == nil || !wiErr.Resolved {
-			log.Warningc(ctx, "failed to resolve on inconsistent read: %s", err)
+			log.Warningc(ctx, "failed to resolve intent asynchronously: %s", err)
 		}
 	})
+	return len(intents)
 }
 
 // TODO(spencerkimball): move to util.

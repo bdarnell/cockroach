@@ -2618,6 +2618,59 @@ func TestRangeDanglingMetaIntent(t *testing.T) {
 	}
 }
 
+// TestSkippedIntentThrottle verifies that the range will check the command
+// queue for queued writes and not attempt to resolve intents if a write is
+// already queued for the intent's key. In particular, this limits the number
+// of goroutines for a single intent to one at a time.
+func TestSkippedIntentThrottle(t *testing.T) {
+	defer leaktest.AfterTest(t)
+	tc := testContext{}
+	tc.Start(t)
+	defer func() { TestingCommandFilter = nil }()
+	defer tc.Stop()
+	done := make(chan struct{})
+
+	key := proto.Key("a")
+	txn := *newTransaction("test", key, 1, proto.SERIALIZABLE, tc.clock)
+
+	var attempts int32
+	TestingCommandFilter = func(args proto.Request) error {
+		if a, ok := args.(*proto.PushTxnRequest); ok &&
+			txn.Equal(a.Header().Txn) {
+			// Block those requests until teardown.
+			atomic.AddInt32(&attempts, 1)
+			<-done
+		}
+		return nil
+	}
+
+	args := getArgs(key, 1, tc.store.StoreID())
+	args.Txn = &txn
+
+	intent := proto.Intent{
+		Key: key,
+		Txn: txn,
+	}
+	var num int
+	expNum := 1
+	for i := 0; i < 5; i++ {
+		num += tc.rng.handleSkippedIntents(&args, []proto.Intent{intent})
+		util.SucceedsWithin(t, time.Second, func() error {
+			if atomic.LoadInt32(&attempts) < 1 {
+				return errors.New("no attempt yet")
+			}
+			return nil
+		})
+	}
+	close(done) // let any blocked pushes through
+	if num != expNum {
+		t.Errorf("expected exactly %d intent resolution attempt(s), but got %d", expNum, num)
+	}
+	if n := atomic.LoadInt32(&attempts); n != 1 {
+		t.Errorf("expected exactly one push to be carried out, but got %d", n)
+	}
+}
+
 func TestRangeLookup(t *testing.T) {
 	defer leaktest.AfterTest(t)
 	tc := testContext{}

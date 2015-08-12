@@ -82,6 +82,23 @@ func (cq *CommandQueue) onEvicted(key, value interface{}) {
 // failed. readOnly is true if the requester is a read-only command;
 // false for read-write.
 func (cq *CommandQueue) GetWait(start, end proto.Key, readOnly bool, wg *sync.WaitGroup) {
+	cq.iter(start, end, readOnly, func(c *cmd) {
+		c.pending = append(c.pending, wg)
+		wg.Add(1)
+	})
+}
+
+// GetNum returns the number of commands for which a new command on the given
+// key range would have to wait.
+func (cq *CommandQueue) GetNum(start, end proto.Key, readOnly bool) int {
+	num := 0
+	cq.iter(start, end, readOnly, func(c *cmd) {
+		num++
+	})
+	return num
+}
+
+func (cq *CommandQueue) iter(start, end proto.Key, readOnly bool, cb func(*cmd)) {
 	// This gives us a memory-efficient end key if end is empty.
 	if len(end) == 0 {
 		end = start.Next()
@@ -91,8 +108,7 @@ func (cq *CommandQueue) GetWait(start, end proto.Key, readOnly bool, wg *sync.Wa
 		c := c.Value.(*cmd)
 		// Only add to the wait group if one of the commands isn't read-only.
 		if !readOnly || !c.readOnly {
-			c.pending = append(c.pending, wg)
-			wg.Add(1)
+			cb(c)
 		}
 	}
 }
