@@ -233,6 +233,7 @@ message Transaction {
   optional NodeList certain_nodes = 12 [(gogoproto.nullable) = false];
   // Writing is true when the Transaction is not read-only.
   optional bool Writing = 13 [(gogoproto.nullable) = false];
+  repeated Intent Intents = 14 [(gogoproto.nullable) = false];
 }
 
 // Lease contains information about leader leases including the

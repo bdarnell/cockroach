@@ -1410,6 +1410,18 @@ class Transaction : public ::google::protobuf::Message {
   bool writing() const;
   void set_writing(bool value);
 
+  // repeated .cockroach.proto.Intent Intents = 14;
+  int intents_size() const;
+  void clear_intents();
+  static const int kIntentsFieldNumber = 14;
+  const ::cockroach::proto::Intent& intents(int index) const;
+  ::cockroach::proto::Intent* mutable_intents(int index);
+  ::cockroach::proto::Intent* add_intents();
+  const ::google::protobuf::RepeatedPtrField< ::cockroach::proto::Intent >&
+      intents() const;
+  ::google::protobuf::RepeatedPtrField< ::cockroach::proto::Intent >*
+      mutable_intents();
+
   // @@protoc_insertion_point(class_scope:cockroach.proto.Transaction)
  private:
   inline void set_has_name();
@@ -1454,6 +1466,7 @@ class Transaction : public ::google::protobuf::Message {
   ::cockroach::proto::Timestamp* orig_timestamp_;
   ::cockroach::proto::Timestamp* max_timestamp_;
   ::cockroach::proto::NodeList* certain_nodes_;
+  ::google::protobuf::RepeatedPtrField< ::cockroach::proto::Intent > intents_;
   bool writing_;
   friend void  protobuf_AddDesc_cockroach_2fproto_2fdata_2eproto();
   friend void protobuf_AssignDesc_cockroach_2fproto_2fdata_2eproto();
@@ -3343,6 +3356,36 @@ inline void Transaction::set_writing(bool value) {
   set_has_writing();
   writing_ = value;
   // @@protoc_insertion_point(field_set:cockroach.proto.Transaction.Writing)
+}
+
+// repeated .cockroach.proto.Intent Intents = 14;
+inline int Transaction::intents_size() const {
+  return intents_.size();
+}
+inline void Transaction::clear_intents() {
+  intents_.Clear();
+}
+inline const ::cockroach::proto::Intent& Transaction::intents(int index) const {
+  // @@protoc_insertion_point(field_get:cockroach.proto.Transaction.Intents)
+  return intents_.Get(index);
+}
+inline ::cockroach::proto::Intent* Transaction::mutable_intents(int index) {
+  // @@protoc_insertion_point(field_mutable:cockroach.proto.Transaction.Intents)
+  return intents_.Mutable(index);
+}
+inline ::cockroach::proto::Intent* Transaction::add_intents() {
+  // @@protoc_insertion_point(field_add:cockroach.proto.Transaction.Intents)
+  return intents_.Add();
+}
+inline const ::google::protobuf::RepeatedPtrField< ::cockroach::proto::Intent >&
+Transaction::intents() const {
+  // @@protoc_insertion_point(field_list:cockroach.proto.Transaction.Intents)
+  return intents_;
+}
+inline ::google::protobuf::RepeatedPtrField< ::cockroach::proto::Intent >*
+Transaction::mutable_intents() {
+  // @@protoc_insertion_point(field_mutable_list:cockroach.proto.Transaction.Intents)
+  return &intents_;
 }
 
 // -------------------------------------------------------------------

@@ -532,8 +532,9 @@ type Transaction struct {
 	// See https://github.com/cockroachdb/cockroach/pull/221.
 	CertainNodes NodeList `protobuf:"bytes,12,opt,name=certain_nodes" json:"certain_nodes"`
 	// Writing is true when the Transaction is not read-only.
-	Writing          bool   `protobuf:"varint,13,opt" json:"Writing"`
-	XXX_unrecognized []byte `json:"-"`
+	Writing          bool     `protobuf:"varint,13,opt" json:"Writing"`
+	Intents          []Intent `protobuf:"bytes,14,rep" json:"Intents"`
+	XXX_unrecognized []byte   `json:"-"`
 }
 
 func (m *Transaction) Reset()      { *m = Transaction{} }
@@ -628,6 +629,13 @@ func (m *Transaction) GetWriting() bool {
 		return m.Writing
 	}
 	return false
+}
+
+func (m *Transaction) GetIntents() []Intent {
+	if m != nil {
+		return m.Intents
+	}
+	return nil
 }
 
 // Lease contains information about leader leases including the
@@ -2141,6 +2149,34 @@ func (m *Transaction) Unmarshal(data []byte) error {
 				}
 			}
 			m.Writing = bool(v != 0)
+		case 14:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Intents", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := data[iNdEx]
+				iNdEx++
+				msglen |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			postIndex := iNdEx + msglen
+			if msglen < 0 {
+				return ErrInvalidLengthData
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Intents = append(m.Intents, Intent{})
+			if err := m.Intents[len(m.Intents)-1].Unmarshal(data[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
 		default:
 			var sizeOfWire int
 			for {
@@ -2771,6 +2807,12 @@ func (m *Transaction) Size() (n int) {
 	l = m.CertainNodes.Size()
 	n += 1 + l + sovData(uint64(l))
 	n += 2
+	if len(m.Intents) > 0 {
+		for _, e := range m.Intents {
+			l = e.Size()
+			n += 1 + l + sovData(uint64(l))
+		}
+	}
 	if m.XXX_unrecognized != nil {
 		n += len(m.XXX_unrecognized)
 	}
@@ -3315,6 +3357,18 @@ func (m *Transaction) MarshalTo(data []byte) (n int, err error) {
 		data[i] = 0
 	}
 	i++
+	if len(m.Intents) > 0 {
+		for _, msg := range m.Intents {
+			data[i] = 0x72
+			i++
+			i = encodeVarintData(data, i, uint64(msg.Size()))
+			n, err := msg.MarshalTo(data[i:])
+			if err != nil {
+				return 0, err
+			}
+			i += n
+		}
+	}
 	if m.XXX_unrecognized != nil {
 		i += copy(data[i:], m.XXX_unrecognized)
 	}
