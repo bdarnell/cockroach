@@ -20,13 +20,17 @@ package storage
 import (
 	"fmt"
 	"math"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/cockroach/config"
 	"github.com/cockroachdb/cockroach/gossip"
 	"github.com/cockroachdb/cockroach/keys"
 	"github.com/cockroachdb/cockroach/proto"
 	"github.com/cockroachdb/cockroach/storage/engine"
+	"github.com/cockroachdb/cockroach/util"
+	"github.com/cockroachdb/cockroach/util/hlc"
 	"github.com/cockroachdb/cockroach/util/leaktest"
 	"github.com/cockroachdb/cockroach/util/log"
 	gogoproto "github.com/gogo/protobuf/proto"
@@ -291,6 +295,107 @@ func TestGCQueueProcess(t *testing.T) {
 	if gcMeta.LastScanNanos != ts.WallTime {
 		t.Errorf("expected walltime nanos %d; got %d", gcMeta.LastScanNanos, ts.WallTime)
 	}
+}
+
+func TestGCQueueTransactionTable(t *testing.T) {
+	defer leaktest.AfterTest(t)
+
+	const now time.Duration = 3 * 24 * time.Hour
+	const dAbandon = -2 * DefaultHeartbeatInterval
+	type spec struct {
+		status      proto.TransactionStatus
+		ts          time.Duration
+		heartbeatTS time.Duration
+		intents     []proto.Intent
+	}
+	// Describes the state of the Txn table before the test.
+	before := map[string]spec{
+		// Too young, should not touch.
+		"a": {proto.PENDING, now - txnCleanupThreshold + 1, 0, []proto.Intent{{Key: proto.Key("q")}}},
+		// Old, but still heartbeat. No GC.
+		"b": {proto.PENDING, 0, now - txnCleanupThreshold + 1, nil},
+		// Old and aborted, should delete.
+		"c": {proto.ABORTED, now - txnCleanupThreshold - 1, 0, nil},
+		// Old and pending, so should push and abort it successfully.
+		"d": {proto.PENDING, now - dAbandon, 0, nil},
+		// Committed and fresh, so no action.
+		"e": {proto.COMMITTED, now - txnCleanupThreshold + 1, 0, nil},
+		// Committed, old and intentless. Bye bye.
+		"f": {proto.COMMITTED, now - txnCleanupThreshold - 1, 0, nil},
+		// Committed and old, but with intent. No action on txn record,
+		// but tries to resolve intents.
+		"g": {proto.COMMITTED, now - txnCleanupThreshold - 1, 0,
+			[]proto.Intent{{Key: proto.Key("z")}}},
+	}
+
+	after := map[string]*spec{}
+	for k := range before {
+		sCopy := before[k]
+		after[k] = &sCopy
+	}
+
+	// Test outcome follows, described as changes to the previous state.
+	after["a"].intents = nil // expect no attempts to resolve the intent
+	after["c"].status = -1
+	after["d"].status = proto.ABORTED
+	after["f"].status = -1
+
+	resolved := map[string][]proto.Intent{}
+	TestingCommandFilter = func(req proto.Request) error {
+		if resArgs, ok := req.(*proto.ResolveIntentRequest); ok {
+			id := string(resArgs.Txn.Key)
+			resolved[id] = append(resolved[id], proto.Intent{
+				Key:    resArgs.Header().Key,
+				EndKey: resArgs.Header().EndKey,
+			})
+		}
+		return nil
+	}
+	tc := testContext{}
+	tc.Start(t)
+	defer tc.Stop()
+	defer func() { TestingCommandFilter = nil }()
+	tc.manualClock.Set(int64(now))
+
+	txns := map[string]proto.Transaction{}
+	for strKey, sp := range before {
+		baseKey := proto.Key(strKey)
+		txnClock := hlc.NewClock(hlc.NewManualClock(int64(sp.ts)).UnixNano)
+		txn := newTransaction("txn1", baseKey, 1, proto.SERIALIZABLE, txnClock)
+		txn.Status = sp.status
+		txn.Intents = sp.intents
+		txn.LastHeartbeat = &proto.Timestamp{WallTime: int64(sp.heartbeatTS)}
+		txns[strKey] = *txn
+		key := keys.TransactionKey(baseKey, txn.ID)
+		if err := engine.MVCCPutProto(tc.engine, nil, key, proto.ZeroTimestamp, nil, txn); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Run GC.
+	gcQ := newGCQueue()
+	if err := gcQ.process(tc.clock.Now(), tc.rng); err != nil {
+		t.Fatal(err)
+	}
+
+	util.SucceedsWithin(t, time.Second, func() error {
+		for strKey, sp := range after {
+			txn := &proto.Transaction{}
+			key := keys.TransactionKey(proto.Key(strKey), txns[strKey].ID)
+			ok, err := engine.MVCCGetProto(tc.engine, key, proto.ZeroTimestamp, true, nil, txn)
+			if err != nil {
+				return err
+			}
+			if expGC := (sp.status == -1); expGC != !ok {
+				return fmt.Errorf("%s: expected gc: %t, but found %s", strKey, expGC, txn)
+			}
+			if !reflect.DeepEqual(resolved[strKey], sp.intents) {
+				return fmt.Errorf("%s: unexpected intent resolutions:\nexpected: %s\nobserved: %s",
+					strKey, sp.intents, resolved[strKey])
+			}
+		}
+		return nil
+	})
 }
 
 // TestGCQueueIntentResolution verifies intent resolution with many
