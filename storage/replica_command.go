@@ -265,12 +265,13 @@ func (r *Replica) EndTransaction(batch engine.Engine, ms *engine.MVCCStats, args
 		reply.Txn = &txn
 	}
 
-	for i := range args.Intents {
-		// Set the transaction into the intents (TxnCoordSender avoids sending
-		// all of that redundant info over the wire).
-		// This needs to be done before the commit status check because
-		// the TransactionAbortedError branch below returns these intents.
-		args.Intents[i].Txn = *(reply.Txn)
+	// Helper to groom the given intents slice to contain the given txn.
+	withTxn := func(intents []proto.Intent, txn proto.Transaction) []proto.Intent {
+		txn.Intents = nil
+		for i, _ := range intents {
+			intents[i].Txn = txn
+		}
+		return intents
 	}
 
 	// If the transaction record already exists, verify that we can either
@@ -285,7 +286,7 @@ func (r *Replica) EndTransaction(batch engine.Engine, ms *engine.MVCCStats, args
 			// that we know them, so we return them all for asynchronous
 			// resolution (we're currently not able to write on error, but
 			// see #1989).
-			return reply, args.Intents, proto.NewTransactionAbortedError(reply.Txn)
+			return reply, withTxn(args.Intents, *reply.Txn), proto.NewTransactionAbortedError(reply.Txn)
 		} else if txn.Epoch < reply.Txn.Epoch {
 			// TODO(tschottdorf): this leaves the Txn record (and more
 			// importantly, intents) dangling; we can't currently write on
@@ -384,6 +385,7 @@ func (r *Replica) EndTransaction(batch engine.Engine, ms *engine.MVCCStats, args
 		if txnAutoGC && len(externalIntents) == 0 {
 			err = engine.MVCCDelete(batch, ms, key, proto.ZeroTimestamp, nil /* txn */)
 		} else {
+			reply.Txn.Intents = withTxn(reply.Txn.Intents, proto.Transaction{}) // scrub Txn
 			err = engine.MVCCPutProto(batch, ms, key, proto.ZeroTimestamp, nil /* txn */, reply.Txn)
 		}
 		if err != nil {
@@ -414,7 +416,7 @@ func (r *Replica) EndTransaction(batch engine.Engine, ms *engine.MVCCStats, args
 		}
 	}
 
-	return reply, externalIntents, nil
+	return reply, withTxn(externalIntents, *reply.Txn), nil
 }
 
 // intersectIntent takes an intent and a descriptor. It then splits the
