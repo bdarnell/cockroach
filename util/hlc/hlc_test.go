@@ -130,6 +130,9 @@ func TestClock(t *testing.T) {
 		// The physical clock has caught up and takes over.
 		{11, RECV, &proto.Timestamp{WallTime: 10, Logical: 31}, proto.Timestamp{WallTime: 11, Logical: 0}},
 		{11, SEND, nil, proto.Timestamp{WallTime: 11, Logical: 1}},
+		// Receive a wall time outside of the maximum offset. It's treated the
+		// same as if it were equal to the internal state, i.e. a logical tick.
+		{12, RECV, &proto.Timestamp{WallTime: 5000, Logical: 0}, proto.Timestamp{WallTime: 11, Logical: 2}},
 	}
 
 	var current proto.Timestamp

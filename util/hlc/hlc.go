@@ -212,11 +212,13 @@ func (c *Clock) Update(rt proto.Timestamp) proto.Timestamp {
 			// The remote wall time is too far ahead to be trustworthy.
 			log.Errorf("Remote wall time offsets from local physical clock: %d (%dns ahead)",
 				rt.WallTime, rt.WallTime-physicalClock)
+			c.state.Logical++
+		} else {
+			// The remote clock is ahead of ours, and we update
+			// our own logical clock with theirs.
+			c.state.WallTime = rt.WallTime
+			c.state.Logical = rt.Logical + 1
 		}
-		// The remote clock is ahead of ours, and we update
-		// our own logical clock with theirs.
-		c.state.WallTime = rt.WallTime
-		c.state.Logical = rt.Logical + 1
 	} else if c.state.WallTime > rt.WallTime {
 		// Our wall time is larger, so it remains but we tick
 		// the logical clock.
