@@ -659,7 +659,8 @@ func TestVerifyPermissions(t *testing.T) {
 		&proto.MergeRequest{},
 		&proto.TruncateLogRequest{},
 		&proto.LeaderLeaseRequest{},
-		&proto.BatchRequest{},
+		// TODO(tschottdorf): can't support this while auto-wrapping in Batch.
+		// &proto.BatchRequest{},
 	}
 
 	var readOnlyRequests []proto.Request
@@ -729,7 +730,13 @@ func TestVerifyPermissions(t *testing.T) {
 				Key:    test.startKey,
 				EndKey: test.endKey,
 			}
-			err := ds.verifyPermissions(r)
+			bArgs := &proto.BatchRequest{}
+			if rb, ok := r.(*proto.BatchRequest); ok {
+				bArgs = rb
+			} else {
+				bArgs.Add(r)
+			}
+			err := ds.verifyPermissions(bArgs)
 			if err != nil && test.hasPermission {
 				t.Errorf("test %d: user %s should have had permission to %s, err: %s",
 					i, test.user, r.Method(), err.Error())
@@ -776,13 +783,15 @@ func TestSendRPCRetry(t *testing.T) {
 	}
 	// Define our rpcSend stub which returns success on the second address.
 	var testFn rpcSendFn = func(_ rpc.Options, method string, addrs []net.Addr, getArgs func(addr net.Addr) gogoproto.Message, getReply func() gogoproto.Message, _ *rpc.Context) ([]gogoproto.Message, error) {
-		if method == "Node.Scan" {
+		if method == "Node.Batch" {
 			// reply from first address failed
 			_ = getReply()
 			// reply from second address succeed
-			reply := getReply()
-			reply.(*proto.ScanResponse).Rows = append([]proto.KeyValue{}, proto.KeyValue{Key: proto.Key("b"), Value: proto.Value{}})
-			return []gogoproto.Message{reply}, nil
+			batchReply := getReply().(*proto.BatchResponse)
+			reply := &proto.ScanResponse{}
+			batchReply.Add(reply)
+			reply.Rows = append([]proto.KeyValue{}, proto.KeyValue{Key: proto.Key("b"), Value: proto.Value{}})
+			return []gogoproto.Message{batchReply}, nil
 		}
 		return nil, util.Errorf("Not expected method %v", method)
 	}
@@ -866,11 +875,13 @@ func TestMultiRangeMergeStaleDescriptor(t *testing.T) {
 		{Key: proto.Key("c"), Value: proto.Value{Bytes: []byte("2")}},
 	}
 	var testFn rpcSendFn = func(_ rpc.Options, method string, addrs []net.Addr, getArgs func(addr net.Addr) gogoproto.Message, getReply func() gogoproto.Message, _ *rpc.Context) ([]gogoproto.Message, error) {
-		if method != "Node.Scan" {
+		if method != "Node.Batch" {
 			t.Fatalf("unexpected method:%s", method)
 		}
 		header := getArgs(testAddress).(proto.Request).Header()
-		reply := getReply().(*proto.ScanResponse)
+		batchReply := getReply().(*proto.BatchResponse)
+		reply := &proto.ScanResponse{}
+		batchReply.Add(reply)
 		results := []proto.KeyValue{}
 		for _, curKV := range existingKVs {
 			if header.Key.Less(curKV.Key.Next()) && curKV.Key.Less(header.EndKey) {
@@ -878,7 +889,7 @@ func TestMultiRangeMergeStaleDescriptor(t *testing.T) {
 			}
 		}
 		reply.Rows = results
-		return []gogoproto.Message{reply}, nil
+		return []gogoproto.Message{batchReply}, nil
 	}
 	ctx := &DistSenderContext{
 		rpcSend: testFn,
