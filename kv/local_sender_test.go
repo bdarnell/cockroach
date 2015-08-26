@@ -19,6 +19,7 @@ package kv
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/multiraft"
@@ -109,6 +110,7 @@ func TestLocalSenderGetStore(t *testing.T) {
 
 func TestLocalSenderLookupReplica(t *testing.T) {
 	defer leaktest.AfterTest(t)
+	//t.Skip(storage.TODOtschottdorf)
 	stopper := stop.NewStopper()
 	defer stopper.Stop()
 	ctx := storage.TestStoreContext
@@ -165,5 +167,9 @@ func TestLocalSenderLookupReplica(t *testing.T) {
 	}
 	if _, r, err := ls.lookupReplica(proto.Key("y"), nil); r.StoreID != s[1].Ident.StoreID || err != nil {
 		t.Errorf("expected store %d; got %d: %v", s[1].Ident.StoreID, r.StoreID, err)
+	}
+
+	if desc, err := ls.firstRange(); err != nil || !reflect.DeepEqual(desc, d[0]) {
+		t.Fatalf("first range not as expected: error=%v, desc=%+v", err, desc)
 	}
 }

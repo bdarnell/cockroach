@@ -26,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/batch"
 	"github.com/cockroachdb/cockroach/client"
 	"github.com/cockroachdb/cockroach/proto"
+	"github.com/cockroachdb/cockroach/security"
 	"github.com/cockroachdb/cockroach/storage"
 	"github.com/cockroachdb/cockroach/util"
 	"github.com/cockroachdb/cockroach/util/log"
@@ -41,6 +42,7 @@ type LocalSender struct {
 
 var _ client.Sender = &LocalSender{}
 var _ batch.Sender = &LocalSender{}
+var _ rangeDescriptorDB = &LocalSender{}
 
 // NewLocalSender returns a local-only sender which directly accesses
 // a collection of stores.
@@ -163,11 +165,11 @@ func (ls *LocalSender) SendBatch(ctx context.Context, ba *proto.BatchRequest) (*
 			// TODO(tschottdorf): remove this dance once BatchResponse is returned.
 			if tmpR != nil {
 				br = tmpR.(*proto.BatchResponse)
+				if br.Error != nil {
+					panic(proto.ErrorUnexpectedlySet)
+				}
 			}
 		}
-	}
-	if br.Error != nil {
-		panic(proto.ErrorUnexpectedlySet)
 	}
 	// TODO(tschottdorf): Later error needs to be associated to an index
 	// and ideally individual requests don't even have an error in their
@@ -185,6 +187,9 @@ func (ls *LocalSender) Send(ctx context.Context, call proto.Call) {
 
 	{
 		br := call.Args.(*proto.BatchRequest)
+		if len(br.Requests) == 0 {
+			panic(batch.Short(br))
+		}
 		br.Key, br.EndKey = batch.KeyRange(br)
 	}
 
@@ -229,4 +234,39 @@ func (ls *LocalSender) lookupReplica(start, end proto.Key) (rangeID proto.RangeI
 		err = proto.NewRangeKeyMismatchError(start, end, nil)
 	}
 	return rangeID, replica, err
+}
+
+func (ls *LocalSender) firstRange() (*proto.RangeDescriptor, error) {
+	_, replica, err := ls.lookupReplica(proto.KeyMin, nil)
+	if err != nil {
+		return nil, err
+	}
+	store, err := ls.GetStore(replica.StoreID)
+	if err != nil {
+		return nil, err
+	}
+
+	rpl := store.LookupReplica(proto.KeyMin, nil)
+	if rpl == nil {
+		panic("firstRange found no first range")
+	}
+	return rpl.Desc(), nil
+}
+
+func (ls *LocalSender) rangeLookup(key proto.Key, options lookupOptions, _ *proto.RangeDescriptor) ([]proto.RangeDescriptor, error) {
+	ba, unwrap := batch.MaybeWrap(&proto.RangeLookupRequest{
+		RequestHeader: proto.RequestHeader{
+			Key:             key,
+			User:            security.RootUser,
+			ReadConsistency: proto.INCONSISTENT,
+		},
+		MaxRanges:     1,
+		IgnoreIntents: options.ignoreIntents,
+		Reverse:       options.useReverseScan,
+	})
+	br, err := ls.SendBatch(context.Background(), ba)
+	if err != nil {
+		return nil, err
+	}
+	return unwrap(br).(*proto.RangeLookupResponse).Ranges, nil
 }

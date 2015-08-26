@@ -36,6 +36,7 @@ import (
 	"github.com/cockroachdb/cockroach/util/caller"
 	"github.com/cockroachdb/cockroach/util/hlc"
 	"github.com/cockroachdb/cockroach/util/leaktest"
+	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/cockroachdb/cockroach/util/stop"
 	gogoproto "github.com/gogo/protobuf/proto"
 )
@@ -70,6 +71,7 @@ func makeTS(walltime int64, logical int32) proto.Timestamp {
 }
 
 func sendCall(coord *TxnCoordSender, call proto.Call) error {
+	call.Args.Header().User = security.RootUser
 	coord.Send(context.TODO(), call)
 	return call.Reply.Header().GoError()
 }
@@ -159,11 +161,10 @@ func TestTxnCoordSenderBeginTransaction(t *testing.T) {
 
 	reply := &proto.PutResponse{}
 	key := proto.Key("key")
-	s.Sender.Send(context.Background(), proto.Call{
+	_ = sendCall(s.Sender, proto.Call{
 		Args: &proto.PutRequest{
 			RequestHeader: proto.RequestHeader{
 				Key:          key,
-				User:         security.RootUser,
 				UserPriority: gogoproto.Int32(-10), // negative user priority is translated into positive priority
 				Txn: &proto.Transaction{
 					Name:      "test txn",
@@ -353,8 +354,7 @@ func getTxn(coord *TxnCoordSender, txn *proto.Transaction) (bool, *proto.Transac
 		},
 		Reply: hr,
 	}
-	coord.Send(context.TODO(), call)
-	if err := call.Reply.Header().GoError(); err != nil {
+	if err := sendCall(coord, call); err != nil {
 		return false, nil, err
 	}
 	return true, hr.Txn, nil
@@ -402,7 +402,7 @@ func TestTxnCoordSenderEndTxn(t *testing.T) {
 		t.Fatal(pReply.GoError())
 	}
 	etReply := &proto.EndTransactionResponse{}
-	s.Sender.Send(context.Background(), proto.Call{
+	if err := sendCall(s.Sender, proto.Call{
 		Args: &proto.EndTransactionRequest{
 			RequestHeader: proto.RequestHeader{
 				Key:       txn.Key,
@@ -412,9 +412,8 @@ func TestTxnCoordSenderEndTxn(t *testing.T) {
 			Commit: true,
 		},
 		Reply: etReply,
-	})
-	if etReply.Error != nil {
-		t.Fatal(etReply.GoError())
+	}); err != nil {
+		t.Fatal(err)
 	}
 	verifyCleanup(key, s.Sender, s.Eng, t)
 }
@@ -718,7 +717,7 @@ func TestTxnDrainingNode(t *testing.T) {
 	}
 	endTxn := func() {
 		etReply := &proto.EndTransactionResponse{}
-		s.Sender.Send(context.Background(), proto.Call{
+		if err := sendCall(s.Sender, proto.Call{
 			Args: &proto.EndTransactionRequest{
 				RequestHeader: proto.RequestHeader{
 					Key:       txn.Key,
@@ -728,9 +727,8 @@ func TestTxnDrainingNode(t *testing.T) {
 				Commit: true,
 			},
 			Reply: etReply,
-		})
-		if etReply.Error != nil {
-			t.Fatal(etReply.GoError())
+		}); err != nil {
+			t.Fatal(err)
 		}
 	}
 
@@ -749,9 +747,8 @@ func TestTxnDrainingNode(t *testing.T) {
 	verifyCleanup(key, s.Sender, s.Eng, t) // make sure intent gets resolved
 
 	// Attempt to start another transaction, but it should be too late.
-	reply := &proto.PutResponse{}
 	key = proto.Key("key")
-	s.Sender.Send(context.Background(), proto.Call{
+	err := sendCall(s.Sender, proto.Call{
 		Args: &proto.PutRequest{
 			RequestHeader: proto.RequestHeader{
 				Key:  key,
@@ -761,11 +758,11 @@ func TestTxnDrainingNode(t *testing.T) {
 				},
 			},
 		},
-		Reply: reply,
+		Reply: &proto.PutResponse{},
 	})
-	if _, ok := reply.GoError().(*proto.NodeUnavailableError); !ok {
+	if _, ok := err.(*proto.NodeUnavailableError); !ok {
 		teardownHeartbeats(s.Sender)
-		t.Fatal(reply.GoError())
+		t.Fatal(err)
 	}
 	close(done)
 	<-s.Stopper.IsStopped()
@@ -793,7 +790,7 @@ func TestTxnCoordIdempotentCleanup(t *testing.T) {
 	}
 	s.Sender.cleanupTxn(nil, *txn) // first call
 	etReply := &proto.EndTransactionResponse{}
-	s.Sender.Send(context.Background(), proto.Call{
+	if err := sendCall(s.Sender, proto.Call{
 		Args: &proto.EndTransactionRequest{
 			RequestHeader: proto.RequestHeader{
 				Key:       txn.Key,
@@ -803,9 +800,8 @@ func TestTxnCoordIdempotentCleanup(t *testing.T) {
 			Commit: true,
 		},
 		Reply: etReply,
-	}) // second call
-	if etReply.Error != nil {
-		t.Fatal(etReply.GoError())
+	}); /* second call */ err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -830,6 +826,7 @@ func TestTxnMultipleCoord(t *testing.T) {
 			txn := newTxn(s.Clock, proto.Key("a"))
 			txn.Writing = tc.writing
 			tc.call.Args.Header().Txn = txn
+			tc.call.Args.Header().User = security.RootUser
 		}
 		err := sendCall(s.Sender, tc.call)
 		if err == nil != tc.ok {
@@ -855,6 +852,7 @@ func TestTxnMultipleCoord(t *testing.T) {
 		if err := sendCall(s.Sender, proto.Call{
 			Args: &proto.EndTransactionRequest{
 				RequestHeader: proto.RequestHeader{
+					User:      security.RootUser,
 					Key:       txn.Key,
 					Timestamp: txn.Timestamp,
 					Txn:       txn,
@@ -863,6 +861,7 @@ func TestTxnMultipleCoord(t *testing.T) {
 			},
 			Reply: etReply,
 		}); err != nil {
+			log.Warning(err)
 			t.Fatal(err)
 		}
 	}

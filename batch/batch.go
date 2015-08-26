@@ -159,9 +159,6 @@ func assertIntegrity(iHeader, bHeader *proto.ResponseHeader) {
 // KeyRange returns a key range which contains all keys in the Batch.
 // In particular, this resolves local addressing.
 func KeyRange(br *proto.BatchRequest) (proto.Key, proto.Key) {
-	if len(br.Requests) == 0 {
-		panic("KeyRange called on empty BatchRequest")
-	}
 	from := proto.KeyMax
 	to := proto.KeyMin
 	for _, arg := range br.Requests {
