@@ -50,12 +50,12 @@ import (
 // ability to subdivide batches intelligently, batch requests are unrolled
 // and send individually.
 type retryableLocalSender struct {
-	*LocalSender
+	*DistSender
 }
 
-func newRetryableLocalSender(lSender *LocalSender) *retryableLocalSender {
+func newRetryableLocalSender(ds *DistSender) *retryableLocalSender {
 	return &retryableLocalSender{
-		LocalSender: lSender,
+		DistSender: ds,
 	}
 }
 
@@ -82,10 +82,15 @@ func (rls *retryableLocalSender) Send(_ context.Context, call proto.Call) {
 	}
 
 	var err error
+	if call.Args.Header().Key.Equal(proto.KeyMax) {
+		panic(batch.Short(call.Args.(*proto.BatchRequest)))
+	}
+
 	for r := retry.Start(retryOpts); r.Next(); {
 		call.Reply.Header().SetGoError(nil)
 		call.Reply.(*proto.BatchResponse).ResetAll()
-		batch.Unroll(context.Background(), rls.LocalSender, call.Args.(*proto.BatchRequest),
+		panic("A")
+		batch.Unroll(context.Background(), rls.DistSender, call.Args.(*proto.BatchRequest),
 			call.Reply.(*proto.BatchResponse))
 		// Check for range key mismatch error (this could happen if
 		// range was split between lookup and execution). In this case,
@@ -125,7 +130,6 @@ type LocalTestCluster struct {
 	Store       *storage.Store
 	DB          *client.DB
 	localSender *LocalSender
-	lSender     *retryableLocalSender
 	Sender      *TxnCoordSender
 	distSender  *DistSender
 	Stopper     *stop.Stopper
@@ -147,7 +151,7 @@ func (ltc *LocalTestCluster) Start(t util.Tester) {
 	ltc.Eng = engine.NewInMem(proto.Attributes{}, 50<<20)
 
 	ltc.localSender = NewLocalSender()
-	ltc.lSender = newRetryableLocalSender(ltc.localSender)
+	//ltc.lSender = newRetryableLocalSender(ltc.localSender)
 	var rpcSend rpcSendFn = func(_ rpc.Options, _ string, _ []net.Addr,
 		getArgs func(addr net.Addr) gogoproto.Message, getReply func() gogoproto.Message,
 		_ *rpc.Context) ([]gogoproto.Message, error) {
@@ -155,7 +159,7 @@ func (ltc *LocalTestCluster) Start(t util.Tester) {
 			Args:  getArgs(nil /* net.Addr */).(proto.Request),
 			Reply: getReply().(proto.Response),
 		}
-		ltc.lSender.Send(context.Background(), call)
+		ltc.localSender.Send(context.Background(), call)
 		return []gogoproto.Message{call.Reply}, call.Reply.Header().GoError()
 	}
 	ltc.distSender = NewDistSender(&DistSenderContext{
@@ -186,7 +190,7 @@ func (ltc *LocalTestCluster) Start(t util.Tester) {
 	if err := ltc.Store.Bootstrap(proto.StoreIdent{NodeID: 1, StoreID: 1}, ltc.Stopper); err != nil {
 		t.Fatalf("unable to start local test cluster: %s", err)
 	}
-	ltc.lSender.AddStore(ltc.Store)
+	ltc.localSender.AddStore(ltc.Store)
 	if err := ltc.Store.BootstrapRange(nil); err != nil {
 		t.Fatalf("unable to start local test cluster: %s", err)
 	}

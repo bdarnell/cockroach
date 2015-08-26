@@ -8,6 +8,7 @@ import (
 	"github.com/cockroachdb/cockroach/keys"
 	"github.com/cockroachdb/cockroach/proto"
 	"github.com/cockroachdb/cockroach/util"
+	"github.com/cockroachdb/cockroach/util/log"
 	"golang.org/x/net/context"
 
 	gogoproto "github.com/gogo/protobuf/proto"
@@ -110,6 +111,7 @@ func MaybeWrapCall(call proto.Call) (proto.Call, func(proto.Call) proto.Call) {
 // TODO(tschottdorf): move to according location once it's clear who needs to
 // use this except for retryableLocalSender.
 func Unroll(ctx context.Context, sender client.Sender, batchArgs *proto.BatchRequest, batchReply *proto.BatchResponse) {
+	panic("UNUSED")
 	// Prepare the calls by unrolling the batch. If the batchReply is
 	// pre-initialized with replies, use those; otherwise create replies
 	// as needed.
@@ -118,6 +120,9 @@ func Unroll(ctx context.Context, sender client.Sender, batchArgs *proto.BatchReq
 			batchReply.Header().SetGoError(err)
 			return
 		}
+	}
+	if batchArgs.Key.Equal(proto.KeyMax) {
+		panic(Short(batchArgs))
 	}
 
 	batchReply.Txn = batchArgs.Txn
@@ -130,6 +135,11 @@ func Unroll(ctx context.Context, sender client.Sender, batchArgs *proto.BatchReq
 			batchReply.Add(call.Reply)
 		} else {
 			call.Reply = batchReply.Responses[i].GetValue().(proto.Response)
+		}
+
+		if call.Args.Header().Key.Equal(proto.KeyMax) {
+			log.Warningf("%s", Short(batchArgs))
+			panic(call.Args)
 		}
 		sender.Send(ctx, call)
 		// Amalgamate transaction updates and propagate first error, if applicable.

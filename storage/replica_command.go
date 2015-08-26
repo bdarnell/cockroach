@@ -250,6 +250,7 @@ func (r *Replica) EndTransaction(batch engine.Engine, ms *engine.MVCCStats, args
 	if args.Txn == nil {
 		return reply, nil, util.Errorf("no transaction specified to EndTransaction")
 	}
+	log.Warningf("ET %s", args.Txn)
 	if !bytes.Equal(args.Txn.Key, args.Key) {
 		return reply, nil, util.Error("EndTransaction must have Key set to transaction's key")
 	}
@@ -1128,6 +1129,8 @@ func (r *Replica) AdminSplit(args proto.AdminSplitRequest) (proto.AdminSplitResp
 		return txn.Run(b)
 	}); err != nil {
 		return reply, util.Errorf("split at key %s failed: %s", splitKey, err)
+	} else {
+		log.Warningf("SPLIT %s OK", splitKey)
 	}
 
 	return reply, nil

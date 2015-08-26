@@ -18,6 +18,7 @@
 package kv
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 
@@ -191,6 +192,9 @@ func (ls *LocalSender) Send(ctx context.Context, call proto.Call) {
 			panic(batch.Short(br))
 		}
 		br.Key, br.EndKey = batch.KeyRange(br)
+		if bytes.Equal(br.Key, proto.KeyMax) {
+			panic(batch.Short(br))
+		}
 	}
 
 	reply, err := ls.SendBatch(ctx, call.Args.(*proto.BatchRequest))
@@ -217,7 +221,8 @@ func (ls *LocalSender) lookupReplica(start, end proto.Key) (rangeID proto.RangeI
 		rng = store.LookupReplica(start, end)
 		if rng == nil {
 			if tmpRng := store.LookupReplica(start, nil); tmpRng != nil {
-				panic("range not contained in one range")
+				// TODO
+				log.Warningf(fmt.Sprintf("range not contained in one range: [%s,%s), but have [%s,%s)", start, end, tmpRng.Desc().StartKey, tmpRng.Desc().EndKey))
 			}
 			continue
 		}
@@ -250,6 +255,7 @@ func (ls *LocalSender) firstRange() (*proto.RangeDescriptor, error) {
 	if rpl == nil {
 		panic("firstRange found no first range")
 	}
+	log.Warningf("FIRSTDESC %s", rpl.Desc())
 	return rpl.Desc(), nil
 }
 

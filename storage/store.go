@@ -1268,6 +1268,7 @@ func (s *Store) ExecuteCmd(ctx context.Context, args proto.Request) (reply proto
 				bReply.Txn.Update(txn)
 			}
 		}
+		log.Warningf("ERR %v", err)
 		if err != nil {
 			return bReply, err
 		}

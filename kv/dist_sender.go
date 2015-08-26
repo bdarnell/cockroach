@@ -549,6 +549,9 @@ func (ds *DistSender) sendAttempt(trace *tracer.Trace, args *proto.BatchRequest,
 			br.Txn = args.Txn
 			return br, nil
 		}
+		if args.Key.Equal(proto.KeyMax) {
+			panic(batch.Short(args))
+		}
 	}
 	defer trace.Epoch("sending RPC")()
 
