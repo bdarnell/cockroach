@@ -1562,7 +1562,7 @@ func TestEndTransactionBeforeHeartbeat(t *testing.T) {
 	// Don't automatically GC the Txn record: We want to heartbeat the
 	// committed Transaction and compare it against our expectations.
 	// When it's removed, the heartbeat would recreate it.
-	defer withoutTxnAutoGC()()
+	defer setTxnAutoGC(false)()
 	tc := testContext{}
 	tc.Start(t)
 	defer tc.Stop()
@@ -1798,6 +1798,7 @@ func TestEndTransactionWithErrors(t *testing.T) {
 // local relative to the transaction record's location.
 func TestEndTransactionGC(t *testing.T) {
 	defer leaktest.AfterTest(t)
+	defer setTxnAutoGC(true)()
 	tc := testContext{}
 	tc.Start(t)
 	defer tc.Stop()
@@ -1909,7 +1910,7 @@ func TestPushTxnAlreadyCommittedOrAborted(t *testing.T) {
 	// be deleted and the intents resolved instantaneously on successful
 	// commit (since they're on the same Range). Could split the range and have
 	// non-local intents if we ever wanted to get rid of this.
-	defer withoutTxnAutoGC()()
+	defer setTxnAutoGC(false)()
 	tc := testContext{}
 	tc.Start(t)
 	defer tc.Stop()

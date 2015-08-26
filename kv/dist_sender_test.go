@@ -740,6 +740,7 @@ func TestVerifyPermissions(t *testing.T) {
 				bArgs = rb
 			} else {
 				bArgs.Add(r)
+				*bArgs.Header() = *r.Header()
 			}
 			err := ds.verifyPermissions(bArgs)
 			if err != nil && test.hasPermission {
