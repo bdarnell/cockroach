@@ -202,7 +202,8 @@ func Short(br *proto.BatchRequest) string {
 // Sender is a new incarnation of client.Sender which only supports batches
 // and uses a request-response pattern.
 type Sender interface {
-	Send(context.Context, *proto.BatchRequest) (*proto.BatchResponse, error)
+	// TODO(tschottdorf) rename to Send() when client.Sender is out of the way.
+	SendBatch(context.Context, *proto.BatchRequest) (*proto.BatchResponse, error)
 }
 
 // SenderFn is a function that implements a Sender.
@@ -220,7 +221,7 @@ func NewChunkingSender(f SenderFn) Sender {
 }
 
 // Send implements Sender.
-func (cs *ChunkingSender) Send(ctx context.Context, batchArgs *proto.BatchRequest) (*proto.BatchResponse, error) {
+func (cs *ChunkingSender) SendBatch(ctx context.Context, batchArgs *proto.BatchRequest) (*proto.BatchResponse, error) {
 	var argChunks []*proto.BatchRequest
 	if len(batchArgs.Requests) < 1 {
 		panic("empty batchArgs")

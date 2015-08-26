@@ -40,6 +40,7 @@ type LocalSender struct {
 }
 
 var _ client.Sender = &LocalSender{}
+var _ batch.Sender = &LocalSender{}
 
 // NewLocalSender returns a local-only sender which directly accesses
 // a collection of stores.
@@ -118,68 +119,82 @@ func (ls *LocalSender) GetStoreIDs() []proto.StoreID {
 	return storeIDs
 }
 
-// Send implements the client.Sender interface. The store is looked
-// up from the store map if specified by header.Replica; otherwise,
-// the command is being executed locally, and the replica is
-// determined via lookup through each store's LookupRange method.
-func (ls *LocalSender) Send(ctx context.Context, call proto.Call) {
-	var err error
-	var store *storage.Store
-
-	call, unwrap := batch.MaybeWrapCall(call)
-	defer unwrap(call)
-
+func (ls *LocalSender) SendBatch(ctx context.Context, ba *proto.BatchRequest) (*proto.BatchResponse, error) {
 	trace := tracer.FromCtx(ctx)
+	var store *storage.Store
+	var err error
 
 	// If we aren't given a Replica, then a little bending over
 	// backwards here. This case applies exclusively to unittests.
-	header := call.Args.Header()
-	{
-		br := call.Args.(*proto.BatchRequest)
-		br.Key, br.EndKey = batch.KeyRange(br)
-	}
-	if header.RangeID == 0 || header.Replica.StoreID == 0 {
+	if ba.RangeID == 0 || ba.Replica.StoreID == 0 {
 		var repl *proto.Replica
 		var rangeID proto.RangeID
-		rangeID, repl, err = ls.lookupReplica(header.Key, header.EndKey)
+		rangeID, repl, err = ls.lookupReplica(ba.Key, ba.EndKey)
 		if err == nil {
-			header.RangeID = rangeID
-			header.Replica = *repl
+			ba.RangeID = rangeID
+			ba.Replica = *repl
 		}
 	}
+
 	ctx = log.Add(ctx,
-		log.Method, call.Method(),
-		log.Key, header.Key,
-		log.RangeID, header.RangeID)
+		log.Method, ba.Method(), // TODO(tschottdorf): Method() always `Batch`.
+		log.Key, ba.Key,
+		log.RangeID, ba.RangeID)
 
 	if err == nil {
-		store, err = ls.GetStore(header.Replica.StoreID)
+		store, err = ls.GetStore(ba.Replica.StoreID)
 	}
-	var reply proto.Response
+
+	var br *proto.BatchResponse
 	if err == nil {
 		// For calls that read data within a txn, we can avoid uncertainty
 		// related retries in certain situations. If the node is in
 		// "CertainNodes", we need not worry about uncertain reads any
 		// more. Setting MaxTimestamp=Timestamp for the operation
 		// accomplishes that. See proto.Transaction.CertainNodes for details.
-		if header.Txn != nil && header.Txn.CertainNodes.Contains(header.Replica.NodeID) {
+		if ba.Txn != nil && ba.Txn.CertainNodes.Contains(ba.Replica.NodeID) {
 			// MaxTimestamp = Timestamp corresponds to no clock uncertainty.
 			trace.Event("read has no clock uncertainty")
-			header.Txn.MaxTimestamp = header.Txn.Timestamp
+			ba.Txn.MaxTimestamp = ba.Txn.Timestamp
 		}
-		reply, err = store.ExecuteCmd(ctx, call.Args)
+		{
+			var tmpR proto.Response
+			tmpR, err = store.ExecuteCmd(ctx, ba)
+			// TODO(tschottdorf): remove this dance once BatchResponse is returned.
+			if tmpR != nil {
+				br = tmpR.(*proto.BatchResponse)
+			}
+		}
 	}
+	if br.Error != nil {
+		panic(proto.ErrorUnexpectedlySet)
+	}
+	// TODO(tschottdorf): Later error needs to be associated to an index
+	// and ideally individual requests don't even have an error in their
+	// header.
+	return br, err
+}
+
+// Send implements the client.Sender interface. The store is looked
+// up from the store map if specified by header.Replica; otherwise,
+// the command is being executed locally, and the replica is
+// determined via lookup through each store's LookupRange method.
+func (ls *LocalSender) Send(ctx context.Context, call proto.Call) {
+	call, unwrap := batch.MaybeWrapCall(call)
+	defer unwrap(call)
+
+	{
+		br := call.Args.(*proto.BatchRequest)
+		br.Key, br.EndKey = batch.KeyRange(br)
+	}
+
+	reply, err := ls.SendBatch(ctx, call.Args.(*proto.BatchRequest))
+
 	if reply != nil {
 		call.Reply.Reset() // required for BatchRequest (concats response otherwise)
 		gogoproto.Merge(call.Reply, reply)
 	}
-	if call.Reply.Header().Error != nil {
-		panic(proto.ErrorUnexpectedlySet)
-	}
 	if err != nil {
-		// TODO(tschottdorf): Later error needs to be associated to an index
-		// and ideally individual requests don't even have an error in their
-		// header.
 		call.Reply.Header().SetGoError(err)
 	}
 }

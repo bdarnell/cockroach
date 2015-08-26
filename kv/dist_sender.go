@@ -580,7 +580,7 @@ func (ds *DistSender) Send(ctx context.Context, call proto.Call) {
 		args.Header().Timestamp = ds.clock.Now()
 	}
 
-	batchReply, err := ds.bSender.Send(ctx, call.Args.(*proto.BatchRequest))
+	batchReply, err := ds.bSender.SendBatch(ctx, call.Args.(*proto.BatchRequest))
 	if err != nil {
 		call.Reply.Header().SetGoError(err)
 	} else {
