@@ -735,6 +735,33 @@ func TestReplicateAddAndRemove(t *testing.T) {
 	}
 }
 
+// TestReplicateRemoveLeader ensures that the raft leader can be
+// removed from the group. Since our visibility into the raft
+// state is limited here, we move the entire range from nodes
+// 0-2 to nodes 3-5.
+func TestReplicateRemoveLeader(t *testing.T) {
+	defer leaktest.AfterTest(t)
+	mtc := startMultiTestContext(t, 6)
+	defer mtc.Stop()
+
+	// Replicate the initial range to three nodes.
+	rangeID := proto.RangeID(1)
+	mtc.replicateRange(rangeID, 0, 1, 2)
+	defer time.Sleep(time.Second)
+
+	// Move the group one node at a time from the first three nodes
+	// to the last three.
+	for i := 0; i < 3; i++ {
+		log.Infof("move: adding to %d", i+3)
+		mtc.replicateRange(rangeID, i, i+3)
+		log.Infof("move: removing from %d", i)
+		mtc.unreplicateRange(rangeID, i, i)
+		log.Infof("move: ticking past lease expiration")
+		mtc.manualClock.Increment(int64(storage.DefaultLeaderLeaseDuration + 1))
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
 // TestRaftHeartbeats verifies that coalesced heartbeats are correctly
 // suppressing elections in an idle cluster.
 func TestRaftHeartbeats(t *testing.T) {

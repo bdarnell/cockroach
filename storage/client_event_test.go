@@ -227,8 +227,10 @@ func TestMultiStoreEventFeed(t *testing.T) {
 	rangeID := proto.RangeID(1)
 	mtc.replicateRange(rangeID, 0, 1, 2)
 
+	db := mtc.stores[0].DB()
+
 	// Add some data in a transaction
-	err := mtc.db.Txn(func(txn *client.Txn) error {
+	err := db.Txn(func(txn *client.Txn) error {
 		b := &client.Batch{}
 		b.Put("a", "asdf")
 		b.Put("c", "jkl;")
@@ -239,23 +241,23 @@ func TestMultiStoreEventFeed(t *testing.T) {
 	}
 
 	// AdminSplit in between the two ranges.
-	if err := mtc.db.AdminSplit("b"); err != nil {
+	if err := db.AdminSplit("b"); err != nil {
 		t.Fatalf("error splitting initial: %s", err)
 	}
 
 	// AdminSplit an empty range at the end of the second range.
-	if err := mtc.db.AdminSplit("z"); err != nil {
+	if err := db.AdminSplit("z"); err != nil {
 		t.Fatalf("error splitting second range: %s", err)
 	}
 
 	// AdminMerge the empty range back into the second range.
-	if err := mtc.db.AdminMerge("c"); err != nil {
+	if err := db.AdminMerge("c"); err != nil {
 		t.Fatalf("error merging final range: %s", err)
 	}
 
 	// Add an additional put through the system and wait for all
 	// replicas to receive it.
-	if _, err := mtc.db.Inc("aa", 5); err != nil {
+	if _, err := db.Inc("aa", 5); err != nil {
 		t.Fatalf("error putting data to db: %s", err)
 	}
 	util.SucceedsWithin(t, time.Second, func() error {

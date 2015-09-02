@@ -99,7 +99,6 @@ type multiTestContext struct {
 	gossip       *gossip.Gossip
 	storePool    *storage.StorePool
 	transport    multiraft.Transport
-	db           *client.DB
 	feed         *util.Feed
 	// The per-store clocks slice normally contains aliases of
 	// multiTestContext.clock, but it may be populated before Start() to
@@ -151,14 +150,6 @@ func (m *multiTestContext) Start(t *testing.T, numStores int) {
 	// Always create the first sender.
 	m.senders = append(m.senders, kv.NewLocalSender())
 
-	if m.db == nil {
-		sender := kv.NewTxnCoordSender(m.senders[0], m.clock, false, nil, m.clientStopper)
-		var err error
-		if m.db, err = client.Open("//", client.SenderOpt(sender)); err != nil {
-			t.Fatal(err)
-		}
-	}
-
 	for i := 0; i < numStores; i++ {
 		m.addStore()
 	}
@@ -191,11 +182,17 @@ func (m *multiTestContext) makeContext(i int) storage.StoreContext {
 		ctx = storage.TestStoreContext
 	}
 	ctx.Clock = m.clocks[i]
-	ctx.DB = m.db
 	ctx.Gossip = m.gossip
 	ctx.StorePool = m.storePool
 	ctx.Transport = m.transport
 	ctx.EventFeed = m.feed
+
+	txnSender := kv.NewTxnCoordSender(m.senders[i], m.clock, false, nil, m.clientStopper)
+	if db, err := client.Open("//", client.SenderOpt(txnSender)); err != nil {
+		m.t.Fatal(err)
+	} else {
+		ctx.DB = db
+	}
 	return ctx
 }
 
@@ -225,6 +222,10 @@ func (m *multiTestContext) addStore() {
 		}
 	}
 
+	if len(m.senders) == idx {
+		m.senders = append(m.senders, kv.NewLocalSender())
+	}
+
 	stopper := stop.NewStopper()
 	ctx := m.makeContext(idx)
 	store := storage.NewStore(ctx, eng, &proto.NodeDescriptor{NodeID: proto.NodeID(idx + 1)})
@@ -249,9 +250,6 @@ func (m *multiTestContext) addStore() {
 	}
 	store.WaitForInit()
 	m.stores = append(m.stores, store)
-	if len(m.senders) == idx {
-		m.senders = append(m.senders, kv.NewLocalSender())
-	}
 	m.senders[idx].AddStore(store)
 	// Save the store identities for later so we can use them in
 	// replication operations even while the store is stopped.
