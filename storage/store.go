@@ -754,22 +754,30 @@ func (s *Store) DisableRangeGCQueue(disabled bool) {
 // ForceReplicationScan iterates over all ranges and enqueues any that
 // need to be replicated. Exposed only for testing.
 func (s *Store) ForceReplicationScan(t util.Tester) {
+	var replicas []*Replica
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for _, r := range s.replicas {
-		s.replicateQueue.MaybeAdd(r, s.ctx.Clock.Now())
+		replicas = append(replicas, r)
+	}
+	s.mu.Unlock()
+
+	for _, r := range replicas {
+		s.replicateQueue.BlockingAdd(r, s.ctx.Clock.Now())
 	}
 }
 
 // ForceRangeGCScan iterates over all ranges and enqueues any that
 // may need to be GC'd. Exposed only for testing.
 func (s *Store) ForceRangeGCScan(t util.Tester) {
+	var replicas []*Replica
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for _, r := range s.replicas {
-		s._rangeGCQueue.MaybeAdd(r, s.ctx.Clock.Now())
+		replicas = append(replicas, r)
+	}
+	s.mu.Unlock()
+
+	for _, r := range replicas {
+		s._rangeGCQueue.BlockingAdd(r, s.ctx.Clock.Now())
 	}
 }
 

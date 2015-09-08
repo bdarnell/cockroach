@@ -70,6 +70,7 @@ func (ls *LocalSender) GetStore(storeID proto.StoreID) (*storage.Store, error) {
 	store, ok := ls.storeMap[storeID]
 	ls.mu.RUnlock()
 	if !ok {
+		panic("store not found")
 		return nil, util.Errorf("store %d not found", storeID)
 	}
 	return store, nil

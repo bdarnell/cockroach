@@ -26,6 +26,7 @@ client_*.go.
 package storage_test
 
 import (
+	"math/rand"
 	"testing"
 	"time"
 
@@ -156,7 +157,8 @@ func (m *multiTestContext) Start(t *testing.T, numStores int) {
 	m.senders = append(m.senders, kv.NewLocalSender())
 
 	if m.db == nil {
-		sender := kv.NewTxnCoordSender(m, m.clock, false, nil, m.clientStopper)
+		//sender := kv.NewTxnCoordSender(m, m.clock, false, nil, m.clientStopper)
+		sender := kv.NewTxnCoordSender(multiTestSender{m, 0}, m.clock, false, nil, m.clientStopper)
 		m.db = client.NewDB(sender)
 	}
 
@@ -170,6 +172,9 @@ func (m *multiTestContext) Start(t *testing.T, numStores int) {
 }
 
 func (m *multiTestContext) Stop() {
+	if r := recover(); r != nil {
+		panic(r)
+	}
 	stoppers := append([]*stop.Stopper{m.clientStopper, m.transportStopper}, m.stoppers...)
 	// Quiesce all the stoppers so that we can stop all stoppers in unison.
 	for i, s := range stoppers {
@@ -185,6 +190,11 @@ func (m *multiTestContext) Stop() {
 	}
 }
 
+type multiTestSender struct {
+	*multiTestContext
+	index int
+}
+
 // Send implements the client.Sender interface. This implementation of "Send" is
 // used to multiplex calls between many local senders in a simple way; It sends
 // the request to each localSender of a multiTestContext in order, stopping if
@@ -193,16 +203,32 @@ func (m *multiTestContext) Stop() {
 // TODO(mrtracy): remove once #2141 is merged and multiTestContext begins using
 // DistSender. This simple implementation will likely be incorrect in some
 // untested cases and is a temporary measure until DistSender is hooked up.
-func (m *multiTestContext) Send(ctx context.Context, call proto.Call) {
+func (m multiTestSender) Send(ctx context.Context, call proto.Call) {
 	done := false
-	for i := range m.senders {
-		m.stoppers[i].RunTask(func() {
+	var lastErr error
+	var indexes []int
+	if storeID := call.Args.Header().Replica.GetStoreID(); storeID != 0 {
+		indexes = []int{int(storeID) - 1}
+		log.Infof("sending to %+v", call.Args.Header().Replica)
+	} else {
+		indexes = rand.Perm(len(m.senders))
+		indexes = append([]int{m.index}, indexes...)
+		log.Infof("shuffling: %v", indexes)
+	}
+	for _, i := range indexes {
+		m.clientStopper.RunTask(func() {
 			m.senders[i].Send(ctx, call)
-			if err := call.Reply.Header().GoError(); err == nil {
+			switch call.Reply.Header().GoError().(type) {
+			case nil:
+				log.Infof("not retrying on success")
 				done = true
-			} else if _, ok := err.(*proto.RangeKeyMismatchError); ok {
+			case *proto.RangeKeyMismatchError: //, *proto.NotLeaderError:
+				lastErr = call.Reply.Header().GoError()
+				log.Infof("retrying on %T", lastErr)
 				call.Reply.Header().SetGoError(nil)
-			} else {
+				call.Reply.Reset()
+			default:
+				log.Infof("not retrying on %s", call.Reply.Header().GoError())
 				// Don't retry on other errors.
 				done = true
 			}
@@ -212,7 +238,11 @@ func (m *multiTestContext) Send(ctx context.Context, call proto.Call) {
 		}
 	}
 	if !done {
-		call.Reply.Header().SetGoError(util.Errorf("failed to send to any store"))
+		if lastErr != nil {
+			call.Reply.Header().SetGoError(lastErr)
+		} else {
+			call.Reply.Header().SetGoError(util.Errorf("failed to send to any store"))
+		}
 	}
 }
 

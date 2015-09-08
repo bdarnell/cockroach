@@ -128,10 +128,10 @@ func TestBaseQueueAddUpdateAndRemove(t *testing.T) {
 	if bq.Length() != 2 {
 		t.Fatalf("expected length 2; got %d", bq.Length())
 	}
-	if bq.pop() != r2 {
+	if bq.pop().value != r2 {
 		t.Error("expected r2")
 	}
-	if bq.pop() != r1 {
+	if bq.pop().value != r1 {
 		t.Error("expected r1")
 	}
 	if r := bq.pop(); r != nil {
@@ -160,10 +160,10 @@ func TestBaseQueueAddUpdateAndRemove(t *testing.T) {
 	if bq.Length() != 2 {
 		t.Fatalf("expected length 2; got %d", bq.Length())
 	}
-	if bq.pop() != r1 {
+	if bq.pop().value != r1 {
 		t.Error("expected r1")
 	}
-	if bq.pop() != r2 {
+	if bq.pop().value != r2 {
 		t.Error("expected r2")
 	}
 	if r := bq.pop(); r != nil {
@@ -178,7 +178,7 @@ func TestBaseQueueAddUpdateAndRemove(t *testing.T) {
 	if bq.Length() != 1 {
 		t.Fatalf("expected length 1; got %d", bq.Length())
 	}
-	if bq.pop() != r1 {
+	if bq.pop().value != r1 {
 		t.Errorf("expected r1")
 	}
 }

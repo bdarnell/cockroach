@@ -210,7 +210,7 @@ func TestStoreRangeMergeLastRange(t *testing.T) {
 // that are not on same store.
 func TestStoreRangeMergeNonConsecutive(t *testing.T) {
 	defer leaktest.AfterTest(t)
-	mtc := startMultiTestContext(t, 2)
+	mtc := startMultiTestContext(t, 3)
 	defer mtc.Stop()
 
 	store0 := mtc.stores[0]
@@ -239,9 +239,9 @@ func TestStoreRangeMergeNonConsecutive(t *testing.T) {
 		log.Errorf("split ranges keys are equal %q!=%q", rangeA.Desc().StartKey, rangeC.Desc().StartKey)
 	}
 
-	// Move range B to the other store and attempt to merge.
-	mtc.replicateRange(rangeB.Desc().RangeID, 0, 1)
-	mtc.unreplicateRange(rangeB.Desc().RangeID, 1, 0)
+	// Move range B to the other stores and attempt to merge.
+	mtc.replicateRange(rangeB.Desc().RangeID, 0, 1, 2)
+	mtc.unreplicateRange(rangeB.Desc().RangeID, 0, 0)
 	mtc.manualClock.Increment(int64(storage.RangeGCQueueInactivityThreshold + storage.DefaultLeaderLeaseDuration + 1))
 	store0.ForceRangeGCScan(t)
 	util.SucceedsWithin(t, time.Second, func() error {

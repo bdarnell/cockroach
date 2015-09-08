@@ -36,6 +36,7 @@ type replicaItem struct {
 	priority float64
 	// The index is needed by update and is maintained by the heap.Interface methods.
 	index int // The index of the item in the heap.
+	done  *sync.WaitGroup
 }
 
 // A priorityQueue implements heap.Interface and holds replicaItems.
@@ -161,7 +162,8 @@ func (bq *baseQueue) Start(clock *hlc.Clock, stopper *stop.Stopper) {
 func (bq *baseQueue) Add(repl *Replica, priority float64) error {
 	bq.Lock()
 	defer bq.Unlock()
-	return bq.addInternal(repl, true, priority)
+	_, err := bq.addInternal(repl, true, priority)
+	return err
 }
 
 // MaybeAdd adds the specified replica if bq.shouldQueue specifies it
@@ -173,18 +175,36 @@ func (bq *baseQueue) MaybeAdd(repl *Replica, now proto.Timestamp) {
 	bq.Lock()
 	defer bq.Unlock()
 	should, priority := bq.impl.shouldQueue(now, repl)
-	if err := bq.addInternal(repl, should, priority); err != nil && log.V(1) {
+	if _, err := bq.addInternal(repl, should, priority); err != nil && log.V(1) {
 		log.Infof("couldn't add %s to queue %s: %s", repl, bq.name, err)
 	}
+}
+
+// BlockingAdd adds the specified replica if bq.shouldQueue specifies it
+// should be queued, and blocks until the replica has been processed.
+// If the queue is too full, the replica may not be added.
+func (bq *baseQueue) BlockingAdd(repl *Replica, now proto.Timestamp) {
+	bq.Lock()
+	should, priority := bq.impl.shouldQueue(now, repl)
+	item, err := bq.addInternal(repl, should, priority)
+	if err != nil {
+		if log.V(1) {
+			log.Infof("couldn't add %s to queue %s: %s", repl, bq.name, err)
+		}
+		bq.Unlock()
+		return
+	}
+	bq.Unlock()
+	item.done.Wait()
 }
 
 // addInternal adds the replica the queue with specified priority. If the
 // replica is already queued, updates the existing priority. Expects the
 // queue lock is held by caller. Returns an error if the replica was not
-// added.
-func (bq *baseQueue) addInternal(repl *Replica, should bool, priority float64) error {
+// added, and a copy of the replicaItem if it was.
+func (bq *baseQueue) addInternal(repl *Replica, should bool, priority float64) (replicaItem, error) {
 	if atomic.LoadInt32(&bq.disabled) == 1 {
-		return errQueueDisabled
+		return replicaItem{}, errQueueDisabled
 	}
 
 	rangeID := repl.Desc().RangeID
@@ -192,26 +212,29 @@ func (bq *baseQueue) addInternal(repl *Replica, should bool, priority float64) e
 	item, ok := bq.replicas[rangeID]
 	if !should {
 		if ok {
-			bq.remove(item.index)
+			oldItem := bq.remove(item.index)
+			oldItem.done.Done()
 		}
-		return errReplicaNotAddable
+		return replicaItem{}, errReplicaNotAddable
 	} else if ok {
 		// Replica has already been added; update priority.
 		bq.priorityQ.update(item, priority)
-		return nil
+		return *item, nil
 	}
 
 	if log.V(1) {
 		log.Infof("adding replica %s to %s queue", repl, bq.name)
 	}
-	item = &replicaItem{value: repl, priority: priority}
+	item = &replicaItem{value: repl, priority: priority, done: &sync.WaitGroup{}}
+	item.done.Add(1)
 	heap.Push(&bq.priorityQ, item)
 	bq.replicas[rangeID] = item
 
 	// If adding this replica has pushed the queue past its maximum size,
 	// remove the lowest priority element.
 	if pqLen := bq.priorityQ.Len(); pqLen > bq.maxSize {
-		bq.remove(pqLen - 1)
+		oldItem := bq.remove(pqLen - 1)
+		oldItem.done.Done()
 	}
 	// Signal the processLoop that a replica has been added.
 	select {
@@ -219,7 +242,7 @@ func (bq *baseQueue) addInternal(repl *Replica, should bool, priority float64) e
 	default:
 		// No need to signal again.
 	}
-	return nil
+	return *item, nil
 }
 
 // MaybeRemove removes the specified replica from the queue if enqueued.
@@ -231,6 +254,7 @@ func (bq *baseQueue) MaybeRemove(repl *Replica) {
 			log.Infof("removing replica %s from %s queue", item.value, bq.name)
 		}
 		bq.remove(item.index)
+		item.done.Done()
 	}
 }
 
@@ -287,9 +311,11 @@ func (bq *baseQueue) processLoop(clock *hlc.Clock, stopper *stop.Stopper) {
 func (bq *baseQueue) processOne(clock *hlc.Clock) {
 	start := time.Now()
 	bq.Lock()
-	repl := bq.pop()
+	replItem := bq.pop()
 	bq.Unlock()
-	if repl != nil {
+	if replItem != nil {
+		defer replItem.done.Done()
+		repl := replItem.value
 		now := clock.Now()
 		if log.V(1) {
 			log.Infof("processing replica %s from %s queue...", repl, bq.name)
@@ -318,18 +344,19 @@ func (bq *baseQueue) processOne(clock *hlc.Clock) {
 // pop dequeues the highest priority replica in the queue. Returns the
 // replica if not empty; otherwise, returns nil. Expects mutex to be
 // locked.
-func (bq *baseQueue) pop() *Replica {
+func (bq *baseQueue) pop() *replicaItem {
 	if bq.priorityQ.Len() == 0 {
 		return nil
 	}
 	item := heap.Pop(&bq.priorityQ).(*replicaItem)
 	delete(bq.replicas, item.value.Desc().RangeID)
-	return item.value
+	return item
 }
 
 // remove removes an element from the priority queue by index. Expects
 // mutex to be locked.
-func (bq *baseQueue) remove(index int) {
+func (bq *baseQueue) remove(index int) *replicaItem {
 	item := heap.Remove(&bq.priorityQ, index).(*replicaItem)
 	delete(bq.replicas, item.value.Desc().RangeID)
+	return item
 }
