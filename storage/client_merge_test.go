@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"reflect"
 	"testing"
+	"time"
 
 	"golang.org/x/net/context"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/cockroachdb/cockroach/storage"
 	"github.com/cockroachdb/cockroach/storage/engine"
 	"github.com/cockroachdb/cockroach/testutils"
+	"github.com/cockroachdb/cockroach/util"
 	"github.com/cockroachdb/cockroach/util/leaktest"
 	"github.com/cockroachdb/cockroach/util/log"
 )
@@ -208,23 +210,24 @@ func TestStoreRangeMergeLastRange(t *testing.T) {
 // that are not on same store.
 func TestStoreRangeMergeNonConsecutive(t *testing.T) {
 	defer leaktest.AfterTest(t)
-	t.Skip("TODO(bdarnell): fix this flaky test")
-	store, stopper := createTestStore(t)
-	defer stopper.Stop()
+	mtc := startMultiTestContext(t, 2)
+	defer mtc.Stop()
+
+	store0 := mtc.stores[0]
 
 	// Split into 3 ranges
-	argsSplit := adminSplitArgs(proto.KeyMin, []byte("d"), 1, store.StoreID())
-	if _, err := store.ExecuteCmd(context.Background(), &argsSplit); err != nil {
+	argsSplit := adminSplitArgs(proto.KeyMin, []byte("d"), 1, store0.StoreID())
+	if _, err := store0.ExecuteCmd(context.Background(), &argsSplit); err != nil {
 		t.Fatalf("Can't split range %s", err)
 	}
-	argsSplit = adminSplitArgs(proto.KeyMin, []byte("b"), 1, store.StoreID())
-	if _, err := store.ExecuteCmd(context.Background(), &argsSplit); err != nil {
+	argsSplit = adminSplitArgs(proto.KeyMin, []byte("b"), 1, store0.StoreID())
+	if _, err := store0.ExecuteCmd(context.Background(), &argsSplit); err != nil {
 		t.Fatalf("Can't split range %s", err)
 	}
 
-	rangeA := store.LookupReplica([]byte("a"), nil)
-	rangeB := store.LookupReplica([]byte("c"), nil)
-	rangeC := store.LookupReplica([]byte("e"), nil)
+	rangeA := store0.LookupReplica([]byte("a"), nil)
+	rangeB := store0.LookupReplica([]byte("c"), nil)
+	rangeC := store0.LookupReplica([]byte("e"), nil)
 
 	if bytes.Equal(rangeA.Desc().StartKey, rangeB.Desc().StartKey) {
 		log.Errorf("split ranges keys are equal %q!=%q", rangeA.Desc().StartKey, rangeB.Desc().StartKey)
@@ -236,37 +239,27 @@ func TestStoreRangeMergeNonConsecutive(t *testing.T) {
 		log.Errorf("split ranges keys are equal %q!=%q", rangeA.Desc().StartKey, rangeC.Desc().StartKey)
 	}
 
-	// Read all of the system keys touched by the split transactions to
-	// resolve intents.  If intents are left unresolved then the
-	// asynchronous resolution may happen after the call to RemoveRange
-	// below, reviving the range and breaking the test.
-	if _, err := store.DB().Scan(keys.LocalMax, keys.SystemMax, 1000); err != nil {
-		t.Fatal(err)
-	}
-
-	// Remove range B from store and attempt to merge. This is a bit of a hack and leaves some
-	// internals in an inconsistent state, so we must re-add the range later.
-	// This is sufficient for now to generate the "ranges not collocated" error; if this changes
-	// in the future we could make this test more realistic by using a multiTestContext
-	// and ChangeReplicas to arrange two ranges onto different stores/nodes.
-	//
-	// Wait for the leader lease to ensure things are quiescent before removing the range.
-	// See #702 and TestStoreExecuteCmdOutOfRange.
-	// TODO(bdarnell): refactor this test to rebalance the range onto a separate node
-	// when this is supported.
-	rangeB.WaitForLeaderLease(t)
-	if err := store.RemoveReplica(rangeB); err != nil {
-		t.Fatal(err)
-	}
+	// Move range B to the other store and attempt to merge.
+	mtc.replicateRange(rangeB.Desc().RangeID, 0, 1)
+	mtc.unreplicateRange(rangeB.Desc().RangeID, 1, 0)
+	mtc.manualClock.Increment(int64(storage.RangeGCQueueInactivityThreshold + storage.DefaultLeaderLeaseDuration + 1))
+	store0.ForceRangeGCScan(t)
+	util.SucceedsWithin(t, time.Second, func() error {
+		if r := store0.LookupReplica([]byte("c"), nil); r != nil {
+			return util.Errorf("range exists")
+		}
+		return nil
+	})
 
 	desc := rangeA.Desc()
-	argsMerge := adminMergeArgs(desc.StartKey, 1, store.StoreID())
+	argsMerge := adminMergeArgs(desc.StartKey, 1, store0.StoreID())
 	if _, err := rangeA.AdminMerge(argsMerge, desc); !testutils.IsError(err, "ranges not collocated") {
 		t.Fatalf("did not got expected error; got %s", err)
 	}
 
-	// Re-add the range. This is necessary for a clean shutdown.
-	if err := store.AddReplicaTest(rangeB); err != nil {
-		t.Fatal(err)
+	for _, store := range mtc.stores {
+		if _, err := store.DB().Scan(keys.LocalMax, keys.SystemMax, 1000); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

@@ -42,6 +42,7 @@ import (
 	"github.com/cockroachdb/cockroach/storage/engine"
 	"github.com/cockroachdb/cockroach/util"
 	"github.com/cockroachdb/cockroach/util/hlc"
+	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/cockroachdb/cockroach/util/stop"
 )
 
@@ -171,7 +172,8 @@ func (m *multiTestContext) Start(t *testing.T, numStores int) {
 func (m *multiTestContext) Stop() {
 	stoppers := append([]*stop.Stopper{m.clientStopper, m.transportStopper}, m.stoppers...)
 	// Quiesce all the stoppers so that we can stop all stoppers in unison.
-	for _, s := range stoppers {
+	for i, s := range stoppers {
+		log.Infof("quisescing stopper %d", i)
 		s.Quiesce()
 	}
 	for _, s := range stoppers {
@@ -192,17 +194,25 @@ func (m *multiTestContext) Stop() {
 // DistSender. This simple implementation will likely be incorrect in some
 // untested cases and is a temporary measure until DistSender is hooked up.
 func (m *multiTestContext) Send(ctx context.Context, call proto.Call) {
-	for _, ls := range m.senders {
-		ls.Send(ctx, call)
-		if err := call.Reply.Header().GoError(); err != nil {
-			// Try the next localSender if this localSender did not have the
-			// requested range.
-			if _, ok := err.(*proto.RangeKeyMismatchError); ok {
+	done := false
+	for i := range m.senders {
+		m.stoppers[i].RunTask(func() {
+			m.senders[i].Send(ctx, call)
+			if err := call.Reply.Header().GoError(); err == nil {
+				done = true
+			} else if _, ok := err.(*proto.RangeKeyMismatchError); ok {
 				call.Reply.Header().SetGoError(nil)
-				continue
+			} else {
+				// Don't retry on other errors.
+				done = true
 			}
+		})
+		if done {
+			break
 		}
-		break
+	}
+	if !done {
+		call.Reply.Header().SetGoError(util.Errorf("failed to send to any store"))
 	}
 }
 
@@ -219,6 +229,8 @@ func (m *multiTestContext) makeContext(i int) storage.StoreContext {
 	ctx.StorePool = m.storePool
 	ctx.Transport = m.transport
 	ctx.EventFeed = m.feed
+	ctx.RangeRetryOptions.Stopper = m.stoppers[i]
+	ctx.RangeRetryOptions.Stopper = m.clientStopper
 	return ctx
 }
 
@@ -249,6 +261,7 @@ func (m *multiTestContext) addStore() {
 	}
 
 	stopper := stop.NewStopper()
+	m.stoppers = append(m.stoppers, stopper)
 	ctx := m.makeContext(idx)
 	store := storage.NewStore(ctx, eng, &proto.NodeDescriptor{NodeID: proto.NodeID(idx + 1)})
 	if needBootstrap {
@@ -279,7 +292,6 @@ func (m *multiTestContext) addStore() {
 	// Save the store identities for later so we can use them in
 	// replication operations even while the store is stopped.
 	m.idents = append(m.idents, store.Ident)
-	m.stoppers = append(m.stoppers, stopper)
 }
 
 // StopStore stops a store but leaves the engine intact.
