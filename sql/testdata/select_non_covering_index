@@ -63,3 +63,25 @@ EXPLAIN SELECT * FROM t WHERE c > 0 ORDER BY c
 0 index-join
 1 scan       t@c /1-
 1 scan       t@primary
+
+statement ok
+INSERT INTO t VALUES (7, 8, NULL)
+
+query I
+SELECT c FROM t WHERE a=7
+----
+NULL
+
+statement ok
+CREATE TABLE boolean_table (
+  id INTEGER NOT NULL,
+  value BOOLEAN,
+  PRIMARY KEY (id))
+
+statement ok
+INSERT INTO boolean_table (id, value) VALUES (1, NULL)
+
+query I
+SELECT boolean_table.value FROM boolean_table
+----
+NULL

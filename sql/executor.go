@@ -257,6 +257,8 @@ func (e *Executor) execStmt(stmt parser.Statement, params parameters, planMaker 
 						row.Values = append(row.Values, driver.Datum{
 							Payload: &driver.Datum_IntervalVal{IntervalVal: vt.Nanoseconds()},
 						})
+					case nil:
+						row.Values = append(row.Values, driver.Datum{})
 					default:
 						return fmt.Errorf("unsupported result type: %s", val.Type())
 					}
