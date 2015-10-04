@@ -87,6 +87,17 @@ func makeTableDesc(p *parser.CreateTable, parentID ID) (TableDescriptor, error) 
 			return desc, util.Errorf("unsupported table def: %T", def)
 		}
 	}
+	if len(desc.PrimaryIndex.ColumnNames) == 0 {
+		pk := IndexDescriptor{
+			Unique: true,
+		}
+		for _, col := range desc.Columns {
+			pk.ColumnNames = append(pk.ColumnNames, col.Name)
+		}
+		if err := desc.AddIndex(pk, true); err != nil {
+			return desc, err
+		}
+	}
 	return desc, nil
 }
 
