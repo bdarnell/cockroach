@@ -323,9 +323,9 @@ func TestStoreRangeMergeNonCollocated(t *testing.T) {
 
 	// Replicate the ranges to different sets of stores. Ranges A and C
 	// are collocated, but B is different.
-	mtc.replicateRange(rangeA.Desc().RangeID, 0, 1, 2)
-	mtc.replicateRange(rangeB.Desc().RangeID, 0, 1, 3)
-	mtc.replicateRange(rangeC.Desc().RangeID, 0, 1, 2)
+	mtc.replicateRange(rangeA.Desc().RangeID, true, 0, 1, 2)
+	mtc.replicateRange(rangeB.Desc().RangeID, true, 0, 1, 3)
+	mtc.replicateRange(rangeC.Desc().RangeID, true, 0, 1, 2)
 
 	// Attempt to merge.
 	desc := rangeA.Desc()

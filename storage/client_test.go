@@ -431,7 +431,10 @@ func (m *multiTestContext) restart() {
 }
 
 // replicateRange replicates the given range onto the given stores.
-func (m *multiTestContext) replicateRange(rangeID roachpb.RangeID, sourceStoreIndex int, dests ...int) {
+// Waits for the range to be copied to the destination stores if
+// 'wait' is true.
+func (m *multiTestContext) replicateRange(rangeID roachpb.RangeID, wait bool,
+	sourceStoreIndex int, dests ...int) {
 	rng, err := m.stores[sourceStoreIndex].GetReplica(rangeID)
 	if err != nil {
 		m.t.Fatal(err)
@@ -448,17 +451,19 @@ func (m *multiTestContext) replicateRange(rangeID roachpb.RangeID, sourceStoreIn
 		}
 	}
 
-	// Wait for the replication to complete on all destination nodes.
-	util.SucceedsWithin(m.t, 3*time.Second, func() error {
-		for _, dest := range dests {
-			// Use LookupRange(keys) instead of GetRange(rangeID) to ensure that the
-			// snapshot has been transferred and the descriptor initialized.
-			if m.stores[dest].LookupReplica(rng.Desc().StartKey, nil) == nil {
-				return util.Errorf("range not found on store %d", dest)
+	if wait {
+		// Wait for the replication to complete on all destination nodes.
+		util.SucceedsWithin(m.t, 3*time.Second, func() error {
+			for _, dest := range dests {
+				// Use LookupRange(keys) instead of GetRange(rangeID) to ensure that the
+				// snapshot has been transferred and the descriptor initialized.
+				if m.stores[dest].LookupReplica(rng.Desc().StartKey, nil) == nil {
+					return util.Errorf("range not found on store %d", dest)
+				}
 			}
-		}
-		return nil
-	})
+			return nil
+		})
+	}
 }
 
 // unreplicateRange removes a replica of the range in the source store

@@ -225,7 +225,7 @@ func TestMultiStoreEventFeed(t *testing.T) {
 
 	// Replicate the default range.
 	rangeID := roachpb.RangeID(1)
-	mtc.replicateRange(rangeID, 0, 1, 2)
+	mtc.replicateRange(rangeID, true, 0, 1, 2)
 
 	// Add some data in a transaction
 	err := mtc.db.Txn(func(txn *client.Txn) error {

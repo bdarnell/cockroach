@@ -37,7 +37,7 @@ func TestReplicaGCQueueDropReplica(t *testing.T) {
 	defer mtc.Stop()
 
 	rangeID := roachpb.RangeID(1)
-	mtc.replicateRange(rangeID, 0, 1, 2)
+	mtc.replicateRange(rangeID, true, 0, 1, 2)
 	mtc.unreplicateRange(rangeID, 0, 1)
 
 	// Make sure the range is removed from the store.
@@ -64,7 +64,7 @@ func TestReplicaGCQueueDropReplicaGCOnScan(t *testing.T) {
 	mtc.stores[1].DisableReplicaGCQueue(true)
 
 	rangeID := roachpb.RangeID(1)
-	mtc.replicateRange(rangeID, 0, 1, 2)
+	mtc.replicateRange(rangeID, true, 0, 1, 2)
 	mtc.unreplicateRange(rangeID, 0, 1)
 
 	// Wait long enough for the direct replica GC to have had a chance and been
