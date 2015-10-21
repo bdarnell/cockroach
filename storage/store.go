@@ -1442,7 +1442,7 @@ func (s *Store) processRaft() {
 		for {
 			select {
 			case events := <-s.multiraft.Events:
-				for _, e := range events {
+				for i, e := range events {
 					var cmd roachpb.RaftCommand
 					var groupID roachpb.RangeID
 					var commandID string
@@ -1485,6 +1485,7 @@ func (s *Store) processRaft() {
 					s.mu.RUnlock()
 					var err error
 					if !ok {
+						log.Infof("processing event %d of a batch of %d", i, len(events))
 						err = util.Errorf("got committed raft command for %d but have no range with that ID: %+v",
 							groupID, cmd)
 						log.Error(err)

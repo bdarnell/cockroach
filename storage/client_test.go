@@ -430,6 +430,8 @@ func (m *multiTestContext) restart() {
 	}
 }
 
+var replicaID roachpb.ReplicaID
+
 // replicateRange replicates the given range onto the given stores.
 // Waits for the range to be copied to the destination stores if
 // 'wait' is true.
@@ -450,6 +452,7 @@ func (m *multiTestContext) replicateRange(rangeID roachpb.RangeID, wait bool,
 			m.t.Fatal(err)
 		}
 	}
+	replicaID++
 
 	if wait {
 		// Wait for the replication to complete on all destination nodes.
@@ -457,8 +460,13 @@ func (m *multiTestContext) replicateRange(rangeID roachpb.RangeID, wait bool,
 			for _, dest := range dests {
 				// Use LookupRange(keys) instead of GetRange(rangeID) to ensure that the
 				// snapshot has been transferred and the descriptor initialized.
-				if m.stores[dest].LookupReplica(rng.Desc().StartKey, nil) == nil {
+				if rep := m.stores[dest].LookupReplica(rng.Desc().StartKey, nil); rep == nil {
 					return util.Errorf("range not found on store %d", dest)
+				} else if _, rd := rep.Desc().FindReplica(m.stores[dest].Ident.StoreID); rd == nil || rd.ReplicaID < replicaID {
+					if rd == nil {
+						return util.Errorf("replica not found")
+					}
+					return util.Errorf("replica id too old: %v vs %v", rd.ReplicaID, replicaID)
 				}
 			}
 			return nil

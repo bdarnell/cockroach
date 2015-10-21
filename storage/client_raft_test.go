@@ -1138,9 +1138,9 @@ func TestRaftRemoveRace(t *testing.T) {
 	rangeID := roachpb.RangeID(1)
 	mtc.replicateRange(rangeID, true, 0, 1, 2)
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 5000; i++ {
 		mtc.unreplicateRange(rangeID, 0, 2)
-		mtc.replicateRange(rangeID, true, 0, 2)
+		mtc.replicateRange(rangeID, i%3 == 0, 0, 2)
 	}
 }
 
