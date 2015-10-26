@@ -67,6 +67,11 @@ var (
 	// NOTE: LocalRangeIDPrefix must be kept in sync with the value
 	// in storage/engine/rocksdb/db.cc.
 	LocalRangeIDPrefix = roachpb.RKey(MakeKey(localPrefix, roachpb.Key("i")))
+	// localReplicaDescriptorSuffix is the suffix for the replica descriptor.
+	// Note that replica descriptors are stored under the range ID (and local
+	// to a single replica), while range descriptors are stored under the range
+	// key (and shared by all replicas)
+	localReplicaDescriptorSuffix = []byte("repd")
 	// LocalResponseCacheSuffix is the suffix for keys storing
 	// command responses used to guarantee idempotency (see ResponseCache).
 	// NOTE: if this value changes, it must be updated in C++
@@ -74,8 +79,6 @@ var (
 	LocalResponseCacheSuffix = []byte("res-")
 	// localRaftLeaderLeaseSuffix is the suffix for the raft leader lease.
 	localRaftLeaderLeaseSuffix = []byte("rfll")
-	// localRaftTombstoneSuffix is the suffix for the raft tombstone.
-	localRaftTombstoneSuffix = []byte("rftb")
 	// localRaftHardStateSuffix is the Suffix for the raft HardState.
 	localRaftHardStateSuffix = []byte("rfth")
 	// localRaftAppliedIndexSuffix is the suffix for the raft applied index.

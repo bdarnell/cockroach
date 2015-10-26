@@ -262,9 +262,21 @@ func (r *Replica) String() string {
 	return fmt.Sprintf("range=%d [%s-%s)", desc.RangeID, desc.StartKey, desc.EndKey)
 }
 
-// Destroy cleans up all data associated with this range, leaving a tombstone.
+// Destroy cleans up all data associated with this replica, leaving
+// the replica descriptor behind as a tombstone.
 func (r *Replica) Destroy() error {
 	desc := r.Desc()
+	// Save the replica descriptor. The range cannot be re-replicated onto this
+	// node without having a higher replica ID.
+	repDescKey := keys.ReplicaDescriptorKey(desc.RangeID)
+	var repDesc roachpb.ReplicaDescriptor
+	if ok, err := engine.MVCCGetProto(r.rm.Engine(), repDescKey, roachpb.ZeroTimestamp, true, nil, &repDesc); err != nil {
+		return err
+	} else if !ok {
+		// TODO(bdarnell): make this an error
+		repDesc.ReplicaID = desc.NextReplicaID - 1
+	}
+
 	iter := newReplicaDataIterator(desc, r.rm.Engine())
 	defer iter.Close()
 	batch := r.rm.Engine().NewBatch()
@@ -273,13 +285,8 @@ func (r *Replica) Destroy() error {
 		_ = batch.Clear(iter.Key())
 	}
 
-	// Save a tombstone. The range cannot be re-replicated onto this
-	// node without having a replica ID of at least desc.NextReplicaID.
-	tombstoneKey := keys.RaftTombstoneKey(desc.RangeID)
-	tombstone := &roachpb.RaftTombstone{
-		NextReplicaID: desc.NextReplicaID,
-	}
-	if err := engine.MVCCPutProto(batch, nil, tombstoneKey, roachpb.ZeroTimestamp, nil, tombstone); err != nil {
+	// Re-write the replica descriptor as a tombstone.
+	if err := engine.MVCCPutProto(batch, nil, repDescKey, roachpb.ZeroTimestamp, nil, &repDesc); err != nil {
 		return err
 	}
 

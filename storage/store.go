@@ -1523,14 +1523,14 @@ func (s *Store) GroupStorage(groupID roachpb.RangeID, replicaID roachpb.ReplicaI
 	defer s.mu.Unlock()
 	r, ok := s.replicas[groupID]
 	if !ok {
-		// Before creating the group, see if there is a tombstone which
-		// would indicate that this is a stale message.
-		tombstoneKey := keys.RaftTombstoneKey(groupID)
-		var tombstone roachpb.RaftTombstone
-		if ok, err := engine.MVCCGetProto(s.Engine(), tombstoneKey, roachpb.ZeroTimestamp, true, nil, &tombstone); err != nil {
+		// Before creating the group, see if there is a replica descriptor
+		// which would indicate that this is a stale message.
+		repDescKey := keys.ReplicaDescriptorKey(groupID)
+		var repDesc roachpb.ReplicaDescriptor
+		if ok, err := engine.MVCCGetProto(s.Engine(), repDescKey, roachpb.ZeroTimestamp, true, nil, &repDesc); err != nil {
 			return nil, err
 		} else if ok {
-			if replicaID != 0 && replicaID < tombstone.NextReplicaID {
+			if replicaID != 0 && replicaID <= repDesc.ReplicaID {
 				return nil, multiraft.ErrGroupDeleted
 			}
 		}
