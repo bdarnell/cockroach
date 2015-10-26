@@ -140,11 +140,9 @@ type pendingCmd struct {
 	done chan roachpb.ResponseWithError // Used to signal waiting RPC handler
 }
 
-// A RangeManager is an interface satisfied by Store through which ranges
+// A rangeManager is an interface satisfied by Store through which ranges
 // contained in the store can access the methods required for splitting.
-// TODO(tschottdorf): consider moving LocalSender to storage, in which
-// case this can be unexported.
-type RangeManager interface {
+type rangeManager interface {
 	// Accessors for shared state.
 	ClusterID() string
 	StoreID() roachpb.StoreID
@@ -181,7 +179,7 @@ type RangeManager interface {
 // as appropriate.
 type Replica struct {
 	desc     unsafe.Pointer // Atomic pointer for *roachpb.RangeDescriptor
-	rm       RangeManager   // Makes some store methods available
+	rm       rangeManager   // Makes some store methods available
 	stats    *rangeStats    // Range statistics
 	maxBytes int64          // Max bytes before split.
 	// Last index persisted to the raft log (not necessarily committed).
@@ -216,7 +214,7 @@ type Replica struct {
 var _ client.Sender = &Replica{}
 
 // NewReplica initializes the replica using the given metadata.
-func NewReplica(desc *roachpb.RangeDescriptor, rm RangeManager) (*Replica, error) {
+func NewReplica(desc *roachpb.RangeDescriptor, rm rangeManager) (*Replica, error) {
 	r := &Replica{
 		rm:          rm,
 		cmdQ:        NewCommandQueue(),
