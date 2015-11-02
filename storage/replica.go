@@ -871,7 +871,7 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchReques
 	if r.proposeRaftCommandFn != nil {
 		errChan = r.proposeRaftCommandFn(idKey, raftCmd)
 	} else {
-		errChan = r.store.ProposeRaftCommand(idKey, raftCmd)
+		errChan = r.store.ProposeRaftCommand(ctx, idKey, raftCmd)
 	}
 
 	return errChan, pendingCmd

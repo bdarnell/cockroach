@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/context"
+
 	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/util/leaktest"
 	"github.com/cockroachdb/cockroach/util/log"
@@ -258,7 +260,7 @@ func TestHeartbeatResponseFanout(t *testing.T) {
 	// Heartbeat response from groupID2 will have a big term than which from groupID1.
 	cluster.nodes[0].coalescedHeartbeat()
 	// Start submit a command to see if groupID1's leader changed?
-	cluster.nodes[0].SubmitCommand(groupID1, makeCommandID(), []byte("command"))
+	cluster.nodes[0].SubmitCommand(context.Background(), groupID1, makeCommandID(), []byte("command"))
 
 	select {
 	case _ = <-cluster.events[0].CommandCommitted:

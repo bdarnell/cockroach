@@ -1373,6 +1373,7 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *roachpb.Writ
 }
 
 type proposeOp struct {
+	ctx   context.Context
 	idKey cmdIDKey
 	cmd   roachpb.RaftCommand
 	ch    chan<- <-chan error
@@ -1382,14 +1383,14 @@ type proposeOp struct {
 // asynchronously and an error or nil will be written to the returned
 // channel when it is committed or aborted (but note that committed does
 // mean that it has been applied to the range yet).
-func (s *Store) ProposeRaftCommand(idKey cmdIDKey, cmd roachpb.RaftCommand) <-chan error {
+func (s *Store) ProposeRaftCommand(ctx context.Context, idKey cmdIDKey, cmd roachpb.RaftCommand) <-chan error {
 	ch := make(chan (<-chan error))
-	s.proposeChan <- proposeOp{idKey, cmd, ch}
+	s.proposeChan <- proposeOp{ctx, idKey, cmd, ch}
 	return <-ch
 }
 
 // proposeRaftCommandImpl runs on the processRaft goroutine.
-func (s *Store) proposeRaftCommandImpl(idKey cmdIDKey, cmd roachpb.RaftCommand) <-chan error {
+func (s *Store) proposeRaftCommandImpl(ctx context.Context, idKey cmdIDKey, cmd roachpb.RaftCommand) <-chan error {
 	// If the range has been removed since the proposal started, drop it now.
 	if _, ok := s.replicas[cmd.RangeID]; !ok {
 		ch := make(chan error, 1)
@@ -1418,17 +1419,18 @@ func (s *Store) proposeRaftCommandImpl(idKey cmdIDKey, cmd roachpb.RaftCommand) 
 				if len(cmd.Cmd.Requests) != 1 {
 					panic("EndTransaction should only ever occur by itself in a batch")
 				}
+				trace := tracer.FromCtx(ctx)
 				// EndTransactionRequest with a ChangeReplicasTrigger is special because raft
 				// needs to understand it; it cannot simply be an opaque command.
-				log.Infof("changing raft replica %d for range %d", crt.Replica, cmd.RangeID)
-				return s.multiraft.ChangeGroupMembership(cmd.RangeID, string(idKey),
-					changeTypeInternalToRaft[crt.ChangeType],
-					crt.Replica,
-					data)
+				trace.Event(fmt.Sprintf("changing raft replica %d for range %d", crt.Replica, cmd.RangeID))
+				trace.SetError() // make sure it is traced
+				return s.multiraft.ChangeGroupMembership(ctx,
+					cmd.RangeID, string(idKey), changeTypeInternalToRaft[crt.ChangeType],
+					crt.Replica, data)
 			}
 		}
 	}
-	return s.multiraft.SubmitCommand(cmd.RangeID, string(idKey), data)
+	return s.multiraft.SubmitCommand(ctx, cmd.RangeID, string(idKey), data)
 }
 
 // processRaft processes write commands that have been committed
@@ -1499,7 +1501,7 @@ func (s *Store) processRaft() {
 				op.ch <- s.removeReplicaImpl(op.rep)
 
 			case op := <-s.proposeChan:
-				op.ch <- s.proposeRaftCommandImpl(op.idKey, op.cmd)
+				op.ch <- s.proposeRaftCommandImpl(op.ctx, op.idKey, op.cmd)
 
 			case <-s.stopper.ShouldStop():
 				return

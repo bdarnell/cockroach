@@ -27,6 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/util/cache"
 	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/cockroachdb/cockroach/util/stop"
+	"github.com/cockroachdb/cockroach/util/tracer"
 	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
 	"golang.org/x/net/context"
@@ -354,18 +355,20 @@ func (m *MultiRaft) RemoveGroup(groupID roachpb.RangeID) error {
 // when the command has been successfully sent, not when it has been committed.
 // An error or nil will be written to the returned channel when the command has
 // been committed or aborted.
-func (m *MultiRaft) SubmitCommand(groupID roachpb.RangeID, commandID string, command []byte) <-chan error {
+func (m *MultiRaft) SubmitCommand(ctx context.Context, groupID roachpb.RangeID, commandID string, command []byte) <-chan error {
 	if log.V(6) {
 		log.Infof("node %v submitting command to group %v", m.nodeID, groupID)
 	}
 	ch := make(chan error, 1)
 	m.proposalChan <- &proposal{
+		ctx:       ctx,
 		groupID:   groupID,
 		commandID: commandID,
 		fn: func() {
-			if err := m.multiNode.Propose(context.Background(), uint64(groupID),
+			if err := m.multiNode.Propose(ctx, uint64(groupID),
 				encodeCommand(commandID, command)); err != nil {
 				log.Errorf("node %v: error proposing command to group %v: %s", m.nodeID, groupID, err)
+				tracer.FromCtx(ctx).SetError()
 			}
 		},
 		ch: ch,
@@ -375,7 +378,7 @@ func (m *MultiRaft) SubmitCommand(groupID roachpb.RangeID, commandID string, com
 
 // ChangeGroupMembership submits a proposed membership change to the cluster.
 // Payload is an opaque blob that will be returned in EventMembershipChangeCommitted.
-func (m *MultiRaft) ChangeGroupMembership(groupID roachpb.RangeID, commandID string,
+func (m *MultiRaft) ChangeGroupMembership(ctx context.Context, groupID roachpb.RangeID, commandID string,
 	changeType raftpb.ConfChangeType, replica roachpb.ReplicaDescriptor, payload []byte) <-chan error {
 	if log.V(6) {
 		log.Infof("node %v proposing membership change to group %v", m.nodeID, groupID)
@@ -386,20 +389,23 @@ func (m *MultiRaft) ChangeGroupMembership(groupID roachpb.RangeID, commandID str
 		return ch
 	}
 	m.proposalChan <- &proposal{
+		ctx:       ctx,
 		groupID:   groupID,
 		commandID: commandID,
 		fn: func() {
-			ctx := ConfChangeContext{
+			trace := tracer.FromCtx(ctx)
+			cCtx := ConfChangeContext{
 				CommandID: commandID,
 				Payload:   payload,
 				Replica:   replica,
 			}
-			encodedCtx, err := ctx.Marshal()
+			encodedCtx, err := cCtx.Marshal()
 			if err != nil {
 				log.Errorf("node %v: error encoding context protobuf", m.nodeID)
+				trace.SetError()
 				return
 			}
-			if err := m.multiNode.ProposeConfChange(context.Background(), uint64(groupID),
+			if err := m.multiNode.ProposeConfChange(ctx, uint64(groupID),
 				raftpb.ConfChange{
 					Type:    changeType,
 					NodeID:  uint64(replica.ReplicaID),
@@ -408,6 +414,7 @@ func (m *MultiRaft) ChangeGroupMembership(groupID roachpb.RangeID, commandID str
 			); err != nil {
 				log.Errorf("node %v: error proposing membership change to node %v: %s", m.nodeID,
 					groupID, err)
+				trace.SetError()
 				return
 			}
 		},
@@ -422,6 +429,7 @@ func (m *MultiRaft) Status(groupID roachpb.RangeID) *raft.Status {
 }
 
 type proposal struct {
+	ctx       context.Context
 	groupID   roachpb.RangeID
 	commandID string
 	fn        func()

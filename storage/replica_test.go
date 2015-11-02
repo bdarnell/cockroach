@@ -29,6 +29,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/context"
+
 	"github.com/cockroachdb/cockroach/base"
 	"github.com/cockroachdb/cockroach/client"
 	"github.com/cockroachdb/cockroach/config"
@@ -3059,7 +3061,7 @@ type mockRangeManager struct {
 // ProposeRaftCommand mocks out the corresponding method on the Store.
 func (mrm *mockRangeManager) ProposeRaftCommand(idKey cmdIDKey, cmd roachpb.RaftCommand) <-chan error {
 	if mrm.mockProposeRaftCommand == nil {
-		return mrm.Store.ProposeRaftCommand(idKey, cmd)
+		return mrm.Store.ProposeRaftCommand(context.Background(), idKey, cmd)
 	}
 	return mrm.mockProposeRaftCommand(idKey, cmd)
 }

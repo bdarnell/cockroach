@@ -202,7 +202,7 @@ func TestProposeBadGroup(t *testing.T) {
 	stopper := stop.NewStopper()
 	cluster := newTestCluster(nil, 3, stopper, t)
 	defer stopper.Stop()
-	err := <-cluster.nodes[1].SubmitCommand(7, "asdf", []byte{})
+	err := <-cluster.nodes[1].SubmitCommand(context.Background(), 7, "asdf", []byte{})
 	if err == nil {
 		t.Fatal("did not get expected error")
 	}
@@ -279,7 +279,7 @@ func TestCommand(t *testing.T) {
 	cluster.triggerElection(0, groupID)
 
 	// Submit a command to the leader
-	cluster.nodes[0].SubmitCommand(groupID, makeCommandID(), []byte("command"))
+	cluster.nodes[0].SubmitCommand(context.Background(), groupID, makeCommandID(), []byte("command"))
 
 	// The command will be committed on each node.
 	for i, events := range cluster.events {
@@ -304,7 +304,7 @@ func TestSlowStorage(t *testing.T) {
 	cluster.storages[2].Block()
 
 	// Submit a command to the leader
-	cluster.nodes[0].SubmitCommand(groupID, makeCommandID(), []byte("command"))
+	cluster.nodes[0].SubmitCommand(context.Background(), groupID, makeCommandID(), []byte("command"))
 
 	// Even with the third node blocked, the other nodes can make progress.
 	for i := 0; i < 2; i++ {
@@ -375,8 +375,8 @@ func TestMembershipChange(t *testing.T) {
 
 	// Add each of the other three nodes to the cluster.
 	for i := 1; i < 4; i++ {
-		ch := cluster.nodes[0].ChangeGroupMembership(groupID, makeCommandID(),
-			raftpb.ConfChangeAddNode,
+		ch := cluster.nodes[0].ChangeGroupMembership(context.Background(),
+			groupID, makeCommandID(), raftpb.ConfChangeAddNode,
 			roachpb.ReplicaDescriptor{
 				NodeID:    cluster.nodes[i].nodeID,
 				StoreID:   roachpb.StoreID(cluster.nodes[i].nodeID),
@@ -463,8 +463,8 @@ func TestRemoveLeader(t *testing.T) {
 	// and trigger at least one new election among the new nodes.
 	for i := 0; i < groupSize; i++ {
 		log.Infof("adding node %d", i+groupSize)
-		ch := cluster.nodes[i].ChangeGroupMembership(groupID, makeCommandID(),
-			raftpb.ConfChangeAddNode,
+		ch := cluster.nodes[i].ChangeGroupMembership(context.Background(),
+			groupID, makeCommandID(), raftpb.ConfChangeAddNode,
 			roachpb.ReplicaDescriptor{
 				NodeID:    cluster.nodes[i+groupSize].nodeID,
 				StoreID:   roachpb.StoreID(cluster.nodes[i+groupSize].nodeID),
@@ -475,8 +475,8 @@ func TestRemoveLeader(t *testing.T) {
 		}
 
 		log.Infof("removing node %d", i)
-		ch = cluster.nodes[i].ChangeGroupMembership(groupID, makeCommandID(),
-			raftpb.ConfChangeRemoveNode,
+		ch = cluster.nodes[i].ChangeGroupMembership(context.Background(),
+			groupID, makeCommandID(), raftpb.ConfChangeRemoveNode,
 			roachpb.ReplicaDescriptor{
 				NodeID:    cluster.nodes[i].nodeID,
 				StoreID:   roachpb.StoreID(cluster.nodes[i].nodeID),
@@ -527,8 +527,8 @@ func TestRapidMembershipChange(t *testing.T) {
 				}
 
 				select {
-				case err := <-cluster.nodes[0].SubmitCommand(groupID,
-					cmdID, []byte("command")):
+				case err := <-cluster.nodes[0].SubmitCommand(context.Background(),
+					groupID, cmdID, []byte("command")):
 					if err == nil {
 						log.Infof("%-3d: ok   %s", i, cmdID)
 						break retry
