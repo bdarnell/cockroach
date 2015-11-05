@@ -1364,41 +1364,58 @@ func TestReplicateRogueRemovedNode(t *testing.T) {
 	finishWG.Wait()
 }
 
-// setupReplicateReAdd removes a node from a range and then re-adds
-// it. When this method returns, node 2 is stopped, and while it was
-// down it has been removed and re-added from the range. When it is
-// restarted it will replay both the removal and re-addition.
-func setupReplicateReAdd(t *testing.T) *multiTestContext {
-	mtc := startMultiTestContext(t, 3)
+// setupReplicateReAdd prepares for various scenarios in which a store
+// is removed from a range and later re-added to it. When this method
+// returns, stores 1, 2, and 3 are stopped. The range is replicated to
+// stores 1 and 2, and store 3 has an old replica of the range that it
+// belives is still current. The specified key contains an integer
+// value 3 on the current stores and 2 on the outdated store 3. Store
+// 0 is still running and contains the system keyspace.
+func setupReplicateReAdd(t *testing.T) (*multiTestContext, roachpb.RangeID, roachpb.Key) {
+	mtc := startMultiTestContext(t, 4)
 
-	// First put the range on all three nodes.
-	raftID := roachpb.RangeID(1)
-	mtc.replicateRange(raftID, 0, 1, 2)
-
-	// Put some data in the range so we'll have something to test for.
-	incArgs := incrementArgs([]byte("a"), 5)
-	if _, err := client.SendWrapped(rg1(mtc.stores[0]), nil, &incArgs); err != nil {
+	// Split the system range from the rest of the keyspace.
+	splitArgs := adminSplitArgs(roachpb.KeyMin, keys.SystemMax)
+	if _, err := client.SendWrapped(rg1(mtc.stores[0]), nil, &splitArgs); err != nil {
 		t.Fatal(err)
 	}
 
-	// Wait for all nodes to catch up.
-	mtc.waitForValues(roachpb.Key("a"), 3*time.Second, []int64{5, 5, 5})
+	key := roachpb.Key("a")
+	rangeID := mtc.stores[0].LookupReplica(keys.Addr(key), nil).Desc().RangeID
 
-	// Stop node 2; while it is down remove the range from it. Since the node is
+	// Set an initial value.
+	incArgs := incrementArgs(key, 2)
+	if _, err := client.SendWrapped(mtc.distSender, nil, &incArgs); err != nil {
+		t.Fatal(err)
+	}
+
+	// Move the data range from store 0 to stores 1-3.
+	mtc.replicateRange(rangeID, 0, 1, 2, 3)
+	mtc.waitForValues(key, 3*time.Second, []int64{2, 2, 2, 2})
+	mtc.unreplicateRange(rangeID, 0, 0)
+	mtc.waitForValues(key, 3*time.Second, []int64{0, 2, 2, 2})
+
+	// Stop store 3; while it is down remove the range from it. Since the node is
 	// down it won't see the removal and clean up its replica.
-	mtc.stopStore(2)
-	mtc.unreplicateRange(raftID, 0, 2)
+	mtc.stopStore(3)
+	mtc.expireLeaderLeases()
+	mtc.unreplicateRange(rangeID, 1, 3)
 
-	// Perform another write.
-	incArgs = incrementArgs([]byte("a"), 11)
-	if _, err := client.SendWrapped(rg1(mtc.stores[0]), nil, &incArgs); err != nil {
+	// Perform another write to the two live stores.
+	incArgs = incrementArgs(key, 3)
+	if _, err := client.SendWrapped(mtc.distSender, nil, &incArgs); err != nil {
 		t.Fatal(err)
 	}
-	mtc.waitForValues(roachpb.Key("a"), 3*time.Second, []int64{16, 16, 5})
+	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 2})
 
-	mtc.replicateRangeNoWait(raftID, 0, 2)
+	// Stop the remaining stores.
+	mtc.stopStore(1)
+	mtc.stopStore(2)
+	mtc.expireLeaderLeases()
 
-	return mtc
+	log.Infof("setup done")
+
+	return mtc, rangeID, key
 }
 
 // TestReplicateReAdd_FromLogNoGC removes a node and re-adds it via log
@@ -1407,29 +1424,29 @@ func setupReplicateReAdd(t *testing.T) *multiTestContext {
 func TestReplicateReAdd_FromLogNoGC(t *testing.T) {
 	defer leaktest.AfterTest(t)
 
-	mtc := setupReplicateReAdd(t)
+	mtc, rangeID, key := setupReplicateReAdd(t)
 	defer mtc.Stop()
 
-	// Bring it back up and re-add the range.
-	// This re-uses the existing replica but changes its replica ID.
+	// Bring the stores back up and re-add the range. Start store 3
+	// first so we can disable its GC queue before the other stores talk
+	// to it.
+	mtc.restartStore(3)
+	mtc.stores[3].DisableReplicaGCQueue(true)
+	mtc.restartStore(1)
 	mtc.restartStore(2)
-	// This is slightly racy, but good enough in practice. The test
-	// should pass whether the GC queue is stopped or not (the following
-	// test covers the case when the GC queue runs first).
-	mtc.stores[2].DisableReplicaGCQueue(true)
+	mtc.replicateRange(rangeID, 1, 3)
 
-	// The range should be synced back up.
-	mtc.waitForValues(roachpb.Key("a"), 3*time.Second, []int64{16, 16, 16})
+	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 5})
 }
 
-func TestReplicateReAdd_FromLogAfterGC(t *testing.T) {
+func TestReplicateReAdd_FromLogGCRace(t *testing.T) {
 	defer leaktest.AfterTest(t)
 
 	// This mutex will be acquired to prevent ChangeReplicas requests
 	// from being applied.
 	var blockChangeReplicas sync.Mutex
 
-	storage.TestingCommandFilter = func(args roachpb.Request, h roachpb.Header) error {
+	/*storage.TestingCommandFilter = func(args roachpb.Request, h roachpb.Header) error {
 		if et, ok := args.(*roachpb.EndTransactionRequest); ok {
 			if et.InternalCommitTrigger.ChangeReplicasTrigger != nil {
 				blockChangeReplicas.Lock()
@@ -1440,23 +1457,22 @@ func TestReplicateReAdd_FromLogAfterGC(t *testing.T) {
 	}
 	defer func() {
 		storage.TestingCommandFilter = nil
-	}()
+	}()*/
 
-	mtc := setupReplicateReAdd(t)
+	mtc, _, key := setupReplicateReAdd(t)
 	defer mtc.Stop()
 
 	mtc.manualClock.Increment(int64(storage.DefaultLeaderLeaseDuration+
 		storage.ReplicaGCQueueInactivityThreshold) + 1)
-	return
 
 	log.Infof("restarting store")
 	blockChangeReplicas.Lock()
-	mtc.restartStore(2)
+	mtc.restartStore(3)
 	log.Infof("gc scanning")
-	mtc.stores[2].ForceReplicaGCScan(t)
-	mtc.waitForValues(roachpb.Key("a"), 3*time.Second, []int64{16, 16, 0})
+	mtc.stores[3].ForceReplicaGCScan(t)
+	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 0})
 	blockChangeReplicas.Unlock()
 
 	// The range should recover and sync back up.
-	mtc.waitForValues(roachpb.Key("a"), 3*time.Second, []int64{16, 16, 16})
+	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 5})
 }
