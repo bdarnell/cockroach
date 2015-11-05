@@ -173,6 +173,8 @@ func TestParse(t *testing.T) {
 		{`SELECT FROM t`},
 		{`SELECT 1 FROM t`},
 		{`SELECT 1, 2 FROM t`},
+		{`SELECT 0xf0 FROM t`},
+		{`SELECT 0xF0 FROM t`},
 		{`SELECT * FROM t`},
 		{`SELECT "*" FROM t`},
 		{`SELECT a, b FROM t`},
@@ -403,8 +405,6 @@ func TestParse2(t *testing.T) {
 		{`SELECT FROM t WHERE a IS UNKNOWN`, `SELECT FROM t WHERE a IS NULL`},
 		{`SELECT FROM t WHERE a IS NOT UNKNOWN`, `SELECT FROM t WHERE a IS NOT NULL`},
 
-		{`SELECT 0xf0 FROM t`, `SELECT 240 FROM t`},
-		{`SELECT 0xF0 FROM t`, `SELECT 240 FROM t`},
 		// Escaped string literals are not always escaped the same because
 		// '''' and e'\'' scan to the same token. It's more convenient to
 		// prefer escaping ' and \, so we do that.
@@ -668,9 +668,9 @@ func TestParsePrecedence(t *testing.T) {
 		return &OrExpr{Left: left, Right: right}
 	}
 
-	one := IntVal(1)
-	two := IntVal(2)
-	three := IntVal(3)
+	one := &IntVal{Val: 1, Str: "1"}
+	two := &IntVal{Val: 2, Str: "2"}
+	three := &IntVal{Val: 3, Str: "3"}
 
 	testData := []struct {
 		sql      string

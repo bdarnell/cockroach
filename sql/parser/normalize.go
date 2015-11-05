@@ -24,12 +24,12 @@ import (
 
 type normalizableExpr interface {
 	Expr
-	normalize(*normalizeVisitor) Expr
+	normalize(*Normalizer) Expr
 }
 
-func (expr *AndExpr) normalize(v *normalizeVisitor) Expr {
+func (expr *AndExpr) normalize(v *Normalizer) Expr {
 	// Use short-circuit evaluation to simplify AND expressions.
-	if isConst(expr.Left) {
+	if v.isConst(expr.Left) {
 		expr.Left, v.err = expr.Left.Eval(v.ctx)
 		if v.err != nil {
 			return expr
@@ -44,7 +44,7 @@ func (expr *AndExpr) normalize(v *normalizeVisitor) Expr {
 		}
 		return expr
 	}
-	if isConst(expr.Right) {
+	if v.isConst(expr.Right) {
 		expr.Right, v.err = expr.Right.Eval(v.ctx)
 		if v.err != nil {
 			return expr
@@ -62,7 +62,7 @@ func (expr *AndExpr) normalize(v *normalizeVisitor) Expr {
 	return expr
 }
 
-func (expr *ComparisonExpr) normalize(v *normalizeVisitor) Expr {
+func (expr *ComparisonExpr) normalize(v *Normalizer) Expr {
 	switch expr.Operator {
 	case EQ, GE, GT, LE, LT:
 		// We want var nodes (VariableExpr, QualifiedName, etc) to be immediate
@@ -87,7 +87,7 @@ func (expr *ComparisonExpr) normalize(v *normalizeVisitor) Expr {
 		// pre-condition, we know there is at least one variable in the expression
 		// tree or we would not have entered this code path.
 		for {
-			if isConst(expr.Left) {
+			if v.isConst(expr.Left) {
 				switch expr.Right.(type) {
 				case *BinaryExpr, VariableExpr, *QualifiedName, ValArg:
 					break
@@ -103,7 +103,7 @@ func (expr *ComparisonExpr) normalize(v *normalizeVisitor) Expr {
 					Left:     expr.Right,
 					Right:    expr.Left,
 				}
-			} else if !isConst(expr.Right) {
+			} else if !v.isConst(expr.Right) {
 				return expr
 			}
 
@@ -116,7 +116,7 @@ func (expr *ComparisonExpr) normalize(v *normalizeVisitor) Expr {
 			// comparison combining portions that are const.
 
 			switch {
-			case isConst(left.Right):
+			case v.isConst(left.Right):
 				//        cmp          cmp
 				//       /   \        /   \
 				//    [+-/]   2  ->  a   [-+*]
@@ -148,7 +148,7 @@ func (expr *ComparisonExpr) normalize(v *normalizeVisitor) Expr {
 					}
 				}
 
-			case isConst(left.Left):
+			case v.isConst(left.Left):
 				//       cmp              cmp
 				//      /   \            /   \
 				//    [+-]   2  ->     [+-]   a
@@ -196,9 +196,9 @@ func (expr *ComparisonExpr) normalize(v *normalizeVisitor) Expr {
 	return expr
 }
 
-func (expr *OrExpr) normalize(v *normalizeVisitor) Expr {
+func (expr *OrExpr) normalize(v *Normalizer) Expr {
 	// Use short-circuit evaluation to simplify OR expressions.
-	if isConst(expr.Left) {
+	if v.isConst(expr.Left) {
 		expr.Left, v.err = expr.Left.Eval(v.ctx)
 		if v.err != nil {
 			return expr
@@ -212,7 +212,7 @@ func (expr *OrExpr) normalize(v *normalizeVisitor) Expr {
 			return expr.Right
 		}
 	}
-	if isConst(expr.Right) {
+	if v.isConst(expr.Right) {
 		expr.Right, v.err = expr.Right.Eval(v.ctx)
 		if v.err != nil {
 			return expr
@@ -229,11 +229,11 @@ func (expr *OrExpr) normalize(v *normalizeVisitor) Expr {
 	return expr
 }
 
-func (expr *ParenExpr) normalize(v *normalizeVisitor) Expr {
+func (expr *ParenExpr) normalize(v *Normalizer) Expr {
 	return expr.Expr
 }
 
-func (expr *RangeCond) normalize(v *normalizeVisitor) Expr {
+func (expr *RangeCond) normalize(v *Normalizer) Expr {
 	if expr.Not {
 		// "a NOT BETWEEN b AND c" -> "a < b OR a > c"
 		return &OrExpr{
@@ -265,7 +265,7 @@ func (expr *RangeCond) normalize(v *normalizeVisitor) Expr {
 	}
 }
 
-func (expr *UnaryExpr) normalize(v *normalizeVisitor) Expr {
+func (expr *UnaryExpr) normalize(v *Normalizer) Expr {
 	// Ugliness: when we see a UnaryMinus, check to see if the expression
 	// being negated is math.MinInt64. This IntVal is only possible if we
 	// parsed "9223372036854775808" as a signed int and is the only negative
@@ -279,7 +279,7 @@ func (expr *UnaryExpr) normalize(v *normalizeVisitor) Expr {
 	// traversal. Or do it during the downward traversal for const
 	// UnaryExprs.
 	if expr.Operator == UnaryMinus {
-		if d, ok := expr.Expr.(IntVal); ok && d == math.MinInt64 {
+		if d, ok := expr.Expr.(*IntVal); ok && d.Val == math.MinInt64 {
 			return DInt(math.MinInt64)
 		}
 	}
@@ -287,11 +287,11 @@ func (expr *UnaryExpr) normalize(v *normalizeVisitor) Expr {
 	return expr
 }
 
-func (expr Row) normalize(v *normalizeVisitor) Expr {
+func (expr Row) normalize(v *Normalizer) Expr {
 	return Tuple(expr)
 }
 
-func (expr DTuple) normalize(_ *normalizeVisitor) Expr {
+func (expr DTuple) normalize(_ *Normalizer) Expr {
 	expr.Normalize()
 	return expr
 }
@@ -307,19 +307,22 @@ func (expr DTuple) normalize(_ *normalizeVisitor) Expr {
 //   a BETWEEN b AND c     -> (a >= b) AND (a <= c)
 //   a NOT BETWEEN b AND c -> (a < b) OR (a > c)
 func (ctx EvalContext) NormalizeExpr(expr Expr) (Expr, error) {
-	v := normalizeVisitor{ctx: ctx}
-	expr = WalkExpr(&v, expr)
-	return expr, v.err
+	v := &Normalizer{}
+	return v.NormalizeExpr(ctx, expr)
 }
 
-type normalizeVisitor struct {
+// Normalizer provides a slightly more efficient interface to expression
+// normalization.
+type Normalizer struct {
 	ctx EvalContext
 	err error
+
+	isConstVisitor isConstVisitor
 }
 
-var _ Visitor = &normalizeVisitor{}
+var _ Visitor = &Normalizer{}
 
-func (v *normalizeVisitor) Visit(expr Expr, pre bool) (Visitor, Expr) {
+func (v *Normalizer) Visit(expr Expr, pre bool) (Visitor, Expr) {
 	if v.err != nil {
 		return nil, expr
 	}
@@ -338,7 +341,7 @@ func (v *normalizeVisitor) Visit(expr Expr, pre bool) (Visitor, Expr) {
 			// Conditional expressions need to be evaluated during the downward
 			// traversal in order to avoid evaluating sub-expressions which should
 			// not be evaluated due to the case/conditional.
-			if isConst(expr) {
+			if v.isConst(expr) {
 				expr, v.err = expr.Eval(v.ctx)
 				if v.err != nil {
 					return nil, expr
@@ -347,7 +350,7 @@ func (v *normalizeVisitor) Visit(expr Expr, pre bool) (Visitor, Expr) {
 		}
 	} else {
 		// Evaluate all constant expressions.
-		if isConst(expr) {
+		if v.isConst(expr) {
 			expr, v.err = expr.Eval(v.ctx)
 			if v.err != nil {
 				return nil, expr
@@ -356,6 +359,37 @@ func (v *normalizeVisitor) Visit(expr Expr, pre bool) (Visitor, Expr) {
 	}
 
 	return v, expr
+}
+
+// NormalizeExpr normalizes an expression, simplifying where possible, but
+// guaranteeing that the result of evaluating the expression is
+// unchanged. Example normalizations:
+//
+//   (a)                   -> a
+//   ROW(a, b, c)          -> (a, b, c)
+//   a = 1 + 1             -> a = 2
+//   a + 1 = 2             -> a = 1
+//   a BETWEEN b AND c     -> (a >= b) AND (a <= c)
+//   a NOT BETWEEN b AND c -> (a < b) OR (a > c)
+func (v *Normalizer) NormalizeExpr(ctx EvalContext, expr Expr) (Expr, error) {
+	*v = Normalizer{ctx: ctx}
+	expr = WalkExpr(v, expr)
+	return expr, v.err
+}
+
+// TypeCheckAndNormalizeExpr is a combination of TypeCheck() and
+// ctx.NormalizeExpr(). It returns an error if either of TypeCheck() or
+// ctx.NormalizeExpr() return one, and otherwise returns the Expr returned by
+// ctx.NormalizeExpr().
+func (v *Normalizer) TypeCheckAndNormalizeExpr(ctx EvalContext, expr Expr) (Expr, error) {
+	if _, err := expr.TypeCheck(); err != nil {
+		return nil, err
+	}
+	return v.NormalizeExpr(ctx, expr)
+}
+
+func (v *Normalizer) isConst(expr Expr) bool {
+	return v.isConstVisitor.run(expr)
 }
 
 func invertComparisonOp(op ComparisonOp) ComparisonOp {
@@ -403,12 +437,17 @@ func (v *isConstVisitor) Visit(expr Expr, pre bool) (Visitor, Expr) {
 	return v, expr
 }
 
+func (v *isConstVisitor) run(expr Expr) bool {
+	v.isConst = true
+	_ = WalkExpr(v, expr)
+	return v.isConst
+}
+
 // isConst returns true if the expression contains only constant values
 // (i.e. it does not contain a VariableExpr, QualifiedName, etc).
 func isConst(expr Expr) bool {
-	v := isConstVisitor{isConst: true}
-	_ = WalkExpr(&v, expr)
-	return v.isConst
+	var v isConstVisitor
+	return v.run(expr)
 }
 
 func isVar(expr Expr) bool {

@@ -24,8 +24,13 @@ import (
 )
 
 func (p *planner) expandSubqueries(expr parser.Expr, columns int) (parser.Expr, error) {
-	v := subqueryVisitor{planner: p, columns: columns}
-	expr = parser.WalkExpr(&v, expr)
+	v := &p.subqueryVisitor
+	*v = subqueryVisitor{
+		planner: p,
+		columns: columns,
+	}
+	v.path = v.pathbuf[0:0]
+	expr = parser.WalkExpr(v, expr)
 	return expr, v.err
 }
 
@@ -33,6 +38,7 @@ type subqueryVisitor struct {
 	*planner
 	columns int
 	path    []parser.Expr // parent expressions
+	pathbuf [16]parser.Expr
 	err     error
 }
 

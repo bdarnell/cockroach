@@ -219,14 +219,16 @@ type Args interface {
 	Arg(name string) (Datum, bool)
 }
 
-type argVisitor struct {
+// ArgFiller ...
+type ArgFiller struct {
 	args Args
 	err  error
 }
 
-var _ Visitor = &argVisitor{}
+var _ Visitor = &ArgFiller{}
 
-func (v *argVisitor) Visit(expr Expr, pre bool) (Visitor, Expr) {
+// Visit implements the Visitor interface.
+func (v *ArgFiller) Visit(expr Expr, pre bool) (Visitor, Expr) {
 	if !pre || v.err != nil {
 		return nil, expr
 	}
@@ -244,10 +246,17 @@ func (v *argVisitor) Visit(expr Expr, pre bool) (Visitor, Expr) {
 
 // FillArgs replaces any placeholder nodes in the expression with arguments
 // supplied with the query.
-func FillArgs(stmt Statement, args Args) error {
-	v := argVisitor{args: args}
-	WalkStmt(&v, stmt)
+func (v *ArgFiller) FillArgs(stmt Statement, args Args) error {
+	*v = ArgFiller{args: args}
+	WalkStmt(v, stmt)
 	return v.err
+}
+
+// FillArgs replaces any placeholder nodes in the expression with arguments
+// supplied with the query.
+func FillArgs(stmt Statement, args Args) error {
+	v := &ArgFiller{}
+	return v.FillArgs(stmt, args)
 }
 
 // WalkStmt walks the entire parsed stmt calling WalkExpr on each

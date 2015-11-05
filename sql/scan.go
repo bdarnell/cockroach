@@ -157,6 +157,7 @@ type scanNode struct {
 	isSecondaryIndex bool
 	reverse          bool
 	columns          []string
+	columnsBuf       [8]string
 	columnIDs        []ColumnID
 	ordering         []int
 	exactPrefix      int
@@ -173,8 +174,10 @@ type scanNode struct {
 	qvals            qvalMap           // the values in the current row
 	colKind          colKindMap        // map of column kinds for decoding column values
 	row              parser.DTuple     // the rendered row
-	filter           parser.Expr       // filtering expression for rows
-	render           []parser.Expr     // rendering expressions for rows
+	rowbuf           [8]parser.Datum
+	filter           parser.Expr   // filtering expression for rows
+	render           []parser.Expr // rendering expressions for rows
+	renderBuf        [8]parser.Expr
 	explain          explainMode
 	explainValue     parser.Datum
 }
@@ -408,6 +411,8 @@ func (n *scanNode) initTargets(targets parser.SelectExprs) error {
 	// Loop over the select expressions and expand them into the expressions
 	// we're going to use to generate the returned column set and the names for
 	// those columns.
+	n.render = n.renderBuf[0:0]
+	n.columns = n.columnsBuf[0:0]
 	for _, target := range targets {
 		if n.err = n.addRender(target); n.err != nil {
 			return n.err
@@ -514,7 +519,8 @@ func (n *scanNode) addRender(target parser.SelectExpr) error {
 	}
 	// Type check the expression to memoize operators and functions.
 	var normalized parser.Expr
-	if normalized, n.err = n.planner.evalCtx.TypeCheckAndNormalizeExpr(resolved); n.err != nil {
+	normalized, n.err = n.planner.normalizer.TypeCheckAndNormalizeExpr(n.planner.evalCtx, resolved)
+	if n.err != nil {
 		return n.err
 	}
 	if normalized, n.err = n.planner.expandSubqueries(normalized, 1); n.err != nil {
@@ -705,7 +711,12 @@ func (n *scanNode) renderRow() {
 	}
 
 	if n.row == nil {
-		n.row = make([]parser.Datum, len(n.render))
+		l := len(n.render)
+		if l <= len(n.rowbuf) {
+			n.row = n.rowbuf[0:l]
+		} else {
+			n.row = make([]parser.Datum, l)
+		}
 	}
 	for i, e := range n.render {
 		n.row[i], n.err = e.Eval(n.planner.evalCtx)
@@ -932,7 +943,8 @@ func (n *scanNode) resolveQNames(expr parser.Expr) (parser.Expr, error) {
 	if expr == nil {
 		return expr, nil
 	}
-	v := qnameVisitor{scanNode: n}
-	expr = parser.WalkExpr(&v, expr)
+	v := &n.planner.qnameVisitor
+	*v = qnameVisitor{scanNode: n}
+	expr = parser.WalkExpr(v, expr)
 	return expr, v.err
 }

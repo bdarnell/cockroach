@@ -45,9 +45,10 @@ func TestDesiredAggregateOrder(t *testing.T) {
 		{`(COUNT(a), MIN(a))`, nil},
 		{`(MIN(a+1))`, nil},
 	}
+	var v extractAggregatesVisitor
 	for _, d := range testData {
 		expr, _ := parseAndNormalizeExpr(t, d.expr)
-		_, funcs, err := extractAggregateFuncs(expr)
+		_, funcs, err := v.run(expr)
 		if err != nil {
 			t.Fatal(err)
 		}

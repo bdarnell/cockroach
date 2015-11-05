@@ -22,6 +22,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/client"
 	"github.com/cockroachdb/cockroach/config"
+	"github.com/cockroachdb/cockroach/sql/driver"
 	"github.com/cockroachdb/cockroach/sql/parser"
 	"github.com/cockroachdb/cockroach/util"
 	"github.com/cockroachdb/cockroach/util/log"
@@ -46,6 +47,20 @@ type planner struct {
 	// TODO(pmattis): This is a hack to force updating to the latest version of a
 	// lease after a schema change operation such as CREATE INDEX.
 	modifiedSchemas []schemaInfo
+
+	// Various structures that are used by almost all SQL statements. Keep
+	// sorted.
+	argFiller         parser.ArgFiller
+	extractAggregates extractAggregatesVisitor
+	normalizer        parser.Normalizer
+	params            parameters
+	parser            parser.Parser
+	qnameVisitor      qnameVisitor
+	resultsBuf        [1]driver.Response_Result
+	resultAlloc       []resultAlloc
+	resultAllocBuf    [1]resultAlloc
+	sessionBuf        [32]byte
+	subqueryVisitor   subqueryVisitor
 }
 
 func (p *planner) setTxn(txn *client.Txn, timestamp time.Time) {

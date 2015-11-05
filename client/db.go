@@ -461,7 +461,6 @@ func (db *DB) RunWithResponse(b *Batch) (*roachpb.BatchResponse, error) {
 // TODO(pmattis): Allow transaction options to be specified.
 func (db *DB) Txn(retryable func(txn *Txn) error) error {
 	txn := NewTxn(*db)
-	txn.SetDebugName("", 1)
 	return txn.exec(retryable)
 }
 

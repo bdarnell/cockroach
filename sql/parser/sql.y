@@ -450,7 +450,7 @@ stmt_list:
 | stmt
   {
     if $1 != nil {
-      $$ = []Statement{$1}
+      $$ = sqllex.(*scanner).makeStatements($1)
     } else {
       $$ = nil
     }
@@ -1645,13 +1645,15 @@ simple_select:
     from_clause where_clause
     group_clause having_clause window_clause
   {
-    $$ = &Select{
+    tmp := sqllex.(*scanner).allocSelect()
+    *tmp = Select{
       Exprs:   $3,
       From:    $4,
       Where:   newWhere(astWhere, $5),
       GroupBy: $6,
       Having:  newWhere(astHaving, $7),
     }
+    $$ = tmp
   }
 | SELECT distinct_clause target_list
     from_clause where_clause
@@ -3244,7 +3246,7 @@ opt_target_list:
 target_list:
   target_elem
   {
-    $$ = SelectExprs{$1}
+    $$ = sqllex.(*scanner).makeSelectExprs($1)
   }
 | target_list ',' target_elem
   {
@@ -3338,7 +3340,10 @@ func_name:
 a_expr_const:
   ICONST
   {
-    $$ = IntVal($1)
+    // This is a hack to allow us to use both the raw string and the
+    // parsed integer from the scanner. Might be better for the ival
+    // field to have the type IntVal instead.
+    $$ = &IntVal{Val: sqlDollar[1].ival, Str: sqlDollar[1].str}
   }
 | FCONST
   {

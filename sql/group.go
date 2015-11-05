@@ -39,7 +39,7 @@ func (p *planner) groupBy(n *parser.Select, s *scanNode) (*groupNode, error) {
 	// Loop over the render expressions and extract any aggregate functions.
 	var funcs []*aggregateFunc
 	for i, r := range s.render {
-		r, f, err := extractAggregateFuncs(r)
+		r, f, err := p.extractAggregates.run(r)
 		if err != nil {
 			return nil, err
 		}
@@ -276,9 +276,9 @@ func (v *extractAggregatesVisitor) Visit(expr parser.Expr, pre bool) (parser.Vis
 	return v, expr
 }
 
-func extractAggregateFuncs(expr parser.Expr) (parser.Expr, []*aggregateFunc, error) {
-	v := extractAggregatesVisitor{}
-	expr = parser.WalkExpr(&v, expr)
+func (v *extractAggregatesVisitor) run(expr parser.Expr) (parser.Expr, []*aggregateFunc, error) {
+	*v = extractAggregatesVisitor{}
+	expr = parser.WalkExpr(v, expr)
 	return expr, v.funcs, v.err
 }
 

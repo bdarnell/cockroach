@@ -85,14 +85,26 @@ func (e *Executor) getSystemConfig() *config.SystemConfig {
 	return e.systemConfig
 }
 
+var plannerPool = sync.Pool{
+	New: func() interface{} {
+		p := &planner{}
+		p.evalCtx.GetLocation = p.session.getLocation
+		return p
+	},
+}
+
 // Execute the statement(s) in the given request and return a response.
 // On error, the returned integer is an HTTP error code.
 func (e *Executor) Execute(args driver.Request) (driver.Response, int, error) {
-	planMaker := &planner{
+	planMaker := plannerPool.Get().(*planner)
+	defer plannerPool.Put(planMaker)
+
+	*planMaker = planner{
 		user: args.GetUser(),
 		evalCtx: parser.EvalContext{
-			NodeID:  e.nodeID,
-			ReCache: e.reCache,
+			NodeID:      e.nodeID,
+			ReCache:     e.reCache,
+			GetLocation: planMaker.evalCtx.GetLocation,
 		},
 		leaseMgr:     e.leaseMgr,
 		systemConfig: e.getSystemConfig(),
@@ -111,11 +123,11 @@ func (e *Executor) Execute(args driver.Request) (driver.Response, int, error) {
 		}
 		planMaker.setTxn(txn, planMaker.session.Txn.Timestamp.GoTime())
 	}
-	planMaker.evalCtx.GetLocation = planMaker.session.getLocation
 
 	// Send the Request for SQL execution and set the application-level error
 	// for each result in the reply.
-	reply := e.execStmts(args.Sql, parameters(args.Params), planMaker)
+	planMaker.params = parameters(args.Params)
+	reply := e.execStmts(args.Sql, planMaker)
 
 	// Send back the session state even if there were application-level errors.
 	// Add transaction to session state.
@@ -126,20 +138,31 @@ func (e *Executor) Execute(args driver.Request) (driver.Response, int, error) {
 		planMaker.session.Txn = nil
 		planMaker.session.MutatesSystemDB = false
 	}
-	bytes, err := proto.Marshal(&planMaker.session)
+
+	var bytes []byte
+	if n := planMaker.session.Size(); n <= len(planMaker.sessionBuf) {
+		bytes = planMaker.sessionBuf[:n]
+	} else {
+		bytes = make([]byte, n)
+	}
+	n, err := planMaker.session.MarshalTo(bytes)
 	if err != nil {
 		return args.CreateReply(), http.StatusInternalServerError, err
 	}
-	reply.Session = bytes
+	reply.Session = bytes[:n]
 
 	return reply, 0, nil
 }
 
 // exec executes the request. Any error encountered is returned; it is
 // the caller's responsibility to update the response.
-func (e *Executor) execStmts(sql string, params parameters, planMaker *planner) driver.Response {
+func (e *Executor) execStmts(sql string, planMaker *planner) driver.Response {
+	planMaker.resultAlloc = planMaker.resultAllocBuf[:]
+
 	var resp driver.Response
-	stmts, err := parser.Parse(sql, parser.Syntax(planMaker.session.Syntax))
+	resp.Results = planMaker.resultsBuf[0:0]
+
+	stmts, err := planMaker.parser.Parse(sql, parser.Syntax(planMaker.session.Syntax))
 	if err != nil {
 		// A parse error occurred: we can't determine if there were multiple
 		// statements or only one, so just pretend there was one.
@@ -147,7 +170,7 @@ func (e *Executor) execStmts(sql string, params parameters, planMaker *planner) 
 		return resp
 	}
 	for _, stmt := range stmts {
-		result, err := e.execStmt(stmt, params, planMaker)
+		result, err := e.execStmt(stmt, planMaker)
 		if err != nil {
 			result = makeResultFromError(planMaker, err)
 		}
@@ -162,7 +185,45 @@ func (e *Executor) execStmts(sql string, params parameters, planMaker *planner) 
 	return resp
 }
 
-func (e *Executor) execStmt(stmt parser.Statement, params parameters, planMaker *planner) (driver.Response_Result, error) {
+type resultAlloc struct {
+	rows      driver.Response_Result_Rows
+	union     driver.Response_Result_Rows_
+	rowsBuf   [16]driver.Response_Result_Rows_Row
+	datums    []driver.Datum
+	datumBuf  [16]driver.Datum
+	intVals   []driver.Datum_IntVal
+	intValBuf [16]driver.Datum_IntVal
+}
+
+func (a *resultAlloc) init() {
+	a.rows.Rows = a.rowsBuf[0:0]
+	a.union.Rows = &a.rows
+	a.datums = a.datumBuf[:]
+	a.intVals = a.intValBuf[:]
+}
+
+func (a *resultAlloc) datumSlice(n int) []driver.Datum {
+	if len(a.datums) >= n {
+		r := a.datums[:n]
+		a.datums = a.datums[n:]
+		return r[0:0]
+	}
+	return make([]driver.Datum, 0, n)
+}
+
+func (a *resultAlloc) datumIntVal(v int64) driver.Datum {
+	var p *driver.Datum_IntVal
+	if len(a.intVals) > 0 {
+		p = &a.intVals[0]
+		a.intVals = a.intVals[1:]
+	} else {
+		p = &driver.Datum_IntVal{}
+	}
+	p.IntVal = v
+	return driver.Datum{Payload: p}
+}
+
+func (e *Executor) execStmt(stmt parser.Statement, planMaker *planner) (driver.Response_Result, error) {
 	var result driver.Response_Result
 	switch stmt.(type) {
 	case *parser.BeginTransaction:
@@ -192,7 +253,7 @@ func (e *Executor) execStmt(stmt parser.Statement, params parameters, planMaker 
 	}
 
 	// Bind all the placeholder variables in the stmt to actual values.
-	if err := parser.FillArgs(stmt, params); err != nil {
+	if err := planMaker.argFiller.FillArgs(stmt, &planMaker.params); err != nil {
 		return result, err
 	}
 
@@ -220,16 +281,21 @@ func (e *Executor) execStmt(stmt parser.Statement, params parameters, planMaker 
 			}
 
 		case parser.Rows:
-			resultRows := &driver.Response_Result_Rows{
-				Columns: plan.Columns(),
+			var a *resultAlloc
+			if len(planMaker.resultAlloc) > 0 {
+				a = &planMaker.resultAlloc[0]
+				planMaker.resultAlloc = planMaker.resultAlloc[1:]
+			} else {
+				a = &resultAlloc{}
 			}
+			a.init()
+			a.rows.Columns = plan.Columns()
+			result.Union = &a.union
+			resultRows := &a.rows
 
-			result.Union = &driver.Response_Result_Rows_{
-				Rows: resultRows,
-			}
 			for plan.Next() {
 				values := plan.Values()
-				row := driver.Response_Result_Rows_Row{Values: make([]driver.Datum, 0, len(values))}
+				row := driver.Response_Result_Rows_Row{Values: a.datumSlice(len(values))}
 				for _, val := range values {
 					if val == parser.DNull {
 						row.Values = append(row.Values, driver.Datum{})
@@ -242,9 +308,7 @@ func (e *Executor) execStmt(stmt parser.Statement, params parameters, planMaker 
 							Payload: &driver.Datum_BoolVal{BoolVal: bool(vt)},
 						})
 					case parser.DInt:
-						row.Values = append(row.Values, driver.Datum{
-							Payload: &driver.Datum_IntVal{IntVal: int64(vt)},
-						})
+						row.Values = append(row.Values, a.datumIntVal(int64(vt)))
 					case parser.DFloat:
 						row.Values = append(row.Values, driver.Datum{
 							Payload: &driver.Datum_FloatVal{FloatVal: float64(vt)},
@@ -318,7 +382,7 @@ func makeResultFromError(planMaker *planner, err error) driver.Response_Result {
 type parameters []driver.Datum
 
 // Arg implements the parser.Args interface.
-func (p parameters) Arg(name string) (parser.Datum, bool) {
+func (p *parameters) Arg(name string) (parser.Datum, bool) {
 	if len(name) == 0 {
 		// This shouldn't happen unless the parser let through an invalid parameter
 		// specification.
@@ -333,10 +397,10 @@ func (p parameters) Arg(name string) (parser.Datum, bool) {
 	if err != nil {
 		return nil, false
 	}
-	if i < 1 || int(i) > len(p) {
+	if i < 1 || int(i) > len(*p) {
 		return nil, false
 	}
-	arg := p[i-1].Payload
+	arg := (*p)[i-1].Payload
 	if arg == nil {
 		return parser.DNull, true
 	}

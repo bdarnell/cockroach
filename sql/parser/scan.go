@@ -40,10 +40,24 @@ type scanner struct {
 	identQuote  int
 	stringQuote int
 	syntax      Syntax
+
+	stmtsAlloc     []Statement
+	stmtsBuf       [1]Statement
+	selects        []Select
+	selectsBuf     [1]Select
+	selectExprs    []SelectExpr
+	selectExprsBuf [4]SelectExpr
 }
 
-func newScanner(str string, syntax Syntax) *scanner {
-	s := &scanner{in: str, syntax: syntax}
+func makeScanner(str string, syntax Syntax) scanner {
+	var s scanner
+	s.init(str, syntax)
+	return s
+}
+
+func (s *scanner) init(str string, syntax Syntax) {
+	s.in = str
+	s.syntax = syntax
 	switch syntax {
 	case Traditional:
 		s.identQuote = '"'
@@ -51,7 +65,38 @@ func newScanner(str string, syntax Syntax) *scanner {
 		s.identQuote = '`'
 		s.stringQuote = '"'
 	}
-	return s
+	s.stmtsAlloc = s.stmtsBuf[:]
+	s.selects = s.selectsBuf[:]
+	s.selectExprs = s.selectExprsBuf[:]
+}
+
+func (s *scanner) makeStatements(stmt Statement) []Statement {
+	if len(s.stmtsAlloc) == 0 {
+		return []Statement{stmt}
+	}
+	stmts := s.stmtsAlloc[0:1:1]
+	s.stmtsAlloc = s.stmtsAlloc[1:]
+	stmts[0] = stmt
+	return stmts
+}
+
+func (s *scanner) allocSelect() *Select {
+	if len(s.selects) == 0 {
+		return &Select{}
+	}
+	sel := &s.selects[0]
+	s.selects = s.selects[1:]
+	return sel
+}
+
+func (s *scanner) makeSelectExprs(e SelectExpr) SelectExprs {
+	if len(s.selectExprs) == 0 {
+		return SelectExprs{e}
+	}
+	exprs := s.selectExprs[0:1:1]
+	s.selectExprs = s.selectExprs[1:]
+	exprs[0] = e
+	return exprs
 }
 
 func (s *scanner) Lex(lval *sqlSymType) int {

@@ -55,13 +55,26 @@ const (
 	Modern
 )
 
+// Parser wraps a scanner and parser implementation.
+type Parser struct {
+	scanner scanner
+	parser  sqlParserImpl
+}
+
+// Parse parses the sql and returns a list of statements.
+func (p *Parser) Parse(sql string, syntax Syntax) (StatementList, error) {
+	p.scanner.init(sql, syntax)
+	p.parser = sqlParserImpl{}
+	if p.parser.Parse(&p.scanner) != 0 {
+		return nil, errors.New(p.scanner.lastError)
+	}
+	return p.scanner.stmts, nil
+}
+
 // Parse parses the sql and returns a list of statements.
 func Parse(sql string, syntax Syntax) (StatementList, error) {
-	s := newScanner(sql, syntax)
-	if sqlParse(s) != 0 {
-		return nil, errors.New(s.lastError)
-	}
-	return s.stmts, nil
+	var p Parser
+	return p.Parse(sql, syntax)
 }
 
 // ParseTraditional is short-hand for Parse(sql, Traditional)
