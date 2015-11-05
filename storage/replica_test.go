@@ -1126,7 +1126,7 @@ func TestRangeCommandQueue(t *testing.T) {
 	blockingStart := make(chan struct{})
 	blockingDone := make(chan struct{})
 	defer close(blockingDone) // make sure teardown can happen
-	TestingCommandFilter = func(_ roachpb.Request, h roachpb.Header) error {
+	TestingCommandFilter = func(_ roachpb.StoreID, _ roachpb.Request, h roachpb.Header) error {
 		if h.GetUserPriority() == 42 {
 			blockingStart <- struct{}{}
 			<-blockingDone
@@ -1242,7 +1242,7 @@ func TestRangeCommandQueueInconsistent(t *testing.T) {
 	key := roachpb.Key("key1")
 	blockingStart := make(chan struct{})
 	blockingDone := make(chan struct{})
-	TestingCommandFilter = func(args roachpb.Request, _ roachpb.Header) error {
+	TestingCommandFilter = func(_ roachpb.StoreID, args roachpb.Request, _ roachpb.Header) error {
 		if put, ok := args.(*roachpb.PutRequest); ok {
 			putBytes, err := put.Value.GetBytes()
 			if err != nil {
@@ -1935,7 +1935,7 @@ func TestEndTransactionResolveOnlyLocalIntents(t *testing.T) {
 	tc := testContext{}
 	key := roachpb.Key("a")
 	splitKey := roachpb.RKey(key).Next()
-	TestingCommandFilter = func(args roachpb.Request, _ roachpb.Header) error {
+	TestingCommandFilter = func(_ roachpb.StoreID, args roachpb.Request, _ roachpb.Header) error {
 		if args.Method() == roachpb.ResolveIntentRange && args.Header().Key.Equal(splitKey.AsRawKey()) {
 			return util.Errorf("boom")
 		}
