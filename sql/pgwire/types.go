@@ -18,10 +18,7 @@
 package pgwire
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"strconv"
 
 	"github.com/cockroachdb/cockroach/sql/driver"
@@ -87,63 +84,55 @@ func typeForDatum(d driver.Datum) pgType {
 	}
 }
 
-func writeDatum(w io.Writer, d driver.Datum) error {
+func (b *writeBuffer) writeDatum(d driver.Datum) error {
 	// NULL is encoded as -1; all other values have a length prefix.
 	if d.Payload == nil {
-		return binary.Write(w, binary.BigEndian, int32(-1))
+		b.putInt32(-1)
+		return nil
 	}
-	var buf bytes.Buffer
+
 	switch v := d.Payload.(type) {
 	case *driver.Datum_BoolVal:
-		var b byte
+		b.putInt32(4)
 		if v.BoolVal {
-			b = 't'
-		} else {
-			b = 'f'
+			return b.WriteByte('t')
 		}
-		if err := buf.WriteByte(b); err != nil {
-			return err
-		}
+		return b.WriteByte('f')
 
 	case *driver.Datum_IntVal:
-		if err := binary.Write(&buf, binary.BigEndian, v); err != nil {
-			return err
-		}
+		b.putInt32(8)
+		b.putInt64(v.IntVal)
+		return nil
 
 	case *driver.Datum_FloatVal:
-		if _, err := buf.WriteString(strconv.FormatFloat(v.FloatVal, 'f', -1, 64)); err != nil {
-			return err
-		}
+		s := strconv.AppendFloat(b.putbuf[0:0], v.FloatVal, 'f', -1, 64)
+		b.putInt32(int32(len(s)))
+		_, err := b.Write(s)
+		return err
 
 	case *driver.Datum_BytesVal:
-		if _, err := buf.Write(v.BytesVal); err != nil {
-			return err
-		}
+		b.putInt32(int32(len(v.BytesVal)))
+		_, err := b.Write(v.BytesVal)
+		return err
 
 	case *driver.Datum_StringVal:
-		if _, err := buf.WriteString(v.StringVal); err != nil {
-			return err
-		}
+		b.putInt32(int32(len(v.StringVal)))
+		_, err := b.WriteString(v.StringVal)
+		return err
 
 	case *driver.Datum_DateVal:
 		panic(fmt.Sprintf("TODO(pmattis): unsupported type %T", v))
 
 	case *driver.Datum_TimeVal:
-		t := v.TimeVal.GoTime()
-		if _, err := buf.WriteString(t.Format(pgTimestampFormat)); err != nil {
-			return err
-		}
+		t := v.TimeVal.GoTime().UTC()
+		s := t.Format(pgTimestampFormat)
+		b.putInt32(int32(len(s)))
+		_, err := b.WriteString(s)
+		return err
 
 	case *driver.Datum_IntervalVal:
 		panic(fmt.Sprintf("TODO(pmattis): unsupported type %T", v))
-
-	default:
-		panic(fmt.Sprintf("unsupported type %T", v))
 	}
 
-	if err := binary.Write(w, binary.BigEndian, int32(buf.Len())); err != nil {
-		return err
-	}
-	_, err := io.Copy(w, &buf)
-	return err
+	panic(fmt.Sprintf("unsupported type %T", d.Payload))
 }

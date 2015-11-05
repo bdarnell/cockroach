@@ -100,12 +100,12 @@ func (s *Server) close() {
 // and delegating to the appropriate connection type.
 func (s *Server) serveConn(conn net.Conn) error {
 	defer conn.Close()
-	msg, err := readUntypedMsg(conn)
-	if err != nil {
+	var buf readBuffer
+	if err := buf.readUntypedMsg(conn); err != nil {
 		return err
 	}
-	version := msg[:4]
-	rest := msg[4:]
+	version := buf.msg[:4]
+	rest := buf.msg[4:]
 	if bytes.Compare(version, versionSSL) == 0 {
 		if len(rest) > 0 {
 			return util.Errorf("unexpected data after SSL request")

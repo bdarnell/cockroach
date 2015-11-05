@@ -19,10 +19,8 @@ package pgwire
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/binary"
-	"fmt"
 	"net"
+	"strconv"
 
 	"github.com/cockroachdb/cockroach/sql"
 	"github.com/cockroachdb/cockroach/sql/driver"
@@ -62,6 +60,9 @@ type v3Conn struct {
 	opts     map[string]string
 	executor *sql.Executor
 	parsed   map[string]parsedQuery
+	readBuf  readBuffer
+	writeBuf writeBuffer
+	tagBuf   [64]byte
 }
 
 func newV3Conn(conn net.Conn, data []byte, executor *sql.Executor) (*v3Conn, error) {
@@ -78,16 +79,16 @@ func newV3Conn(conn net.Conn, data []byte, executor *sql.Executor) (*v3Conn, err
 }
 
 func (c *v3Conn) parseOptions(data []byte) error {
-	buf := bytes.NewBuffer(data)
+	buf := readBuffer{msg: data}
 	for {
-		key, err := readString(buf)
+		key, err := buf.getString()
 		if err != nil {
 			return util.Errorf("error reading option key: %s", err)
 		}
 		if len(key) == 0 {
 			return nil
 		}
-		value, err := readString(buf)
+		value, err := buf.getString()
 		if err != nil {
 			return util.Errorf("error reading option value: %s", err)
 		}
@@ -98,29 +99,28 @@ func (c *v3Conn) parseOptions(data []byte) error {
 func (c *v3Conn) serve() error {
 	rd := bufio.NewReader(c.conn)
 	// TODO(bdarnell): real auth flow. For now just accept anything.
-	var authOKMsg bytes.Buffer
-	if err := binary.Write(&authOKMsg, binary.BigEndian, authOK); err != nil {
-		return err
-	}
-	if err := writeTypedMsg(c.conn, serverMsgAuth, authOKMsg.Bytes()); err != nil {
+	c.writeBuf.init(serverMsgAuth)
+	c.writeBuf.putInt32(authOK)
+	if err := c.writeBuf.flush(c.conn); err != nil {
 		return err
 	}
 	for {
 		// TODO(bdarnell): change the 'I' below based on transaction status.
-		if err := writeTypedMsg(c.conn, serverMsgReady, []byte{'I'}); err != nil {
+		c.writeBuf.init(serverMsgReady)
+		c.writeBuf.Write([]byte{'I'})
+		if err := c.writeBuf.flush(c.conn); err != nil {
 			return err
 		}
-		typ, msg, err := readTypedMsg(rd)
+		typ, err := c.readBuf.readTypedMsg(rd)
 		if err != nil {
 			return err
 		}
-		buf := bytes.NewBuffer(msg)
 		switch typ {
 		case clientMsgSimpleQuery:
-			err = c.handleSimpleQuery(buf)
+			err = c.handleSimpleQuery(&c.readBuf)
 
 		case clientMsgParse:
-			err = c.handleParse(buf)
+			err = c.handleParse(&c.readBuf)
 
 		case clientMsgTerminate:
 			return nil
@@ -134,8 +134,8 @@ func (c *v3Conn) serve() error {
 	}
 }
 
-func (c *v3Conn) handleSimpleQuery(buf *bytes.Buffer) error {
-	query, err := readString(buf)
+func (c *v3Conn) handleSimpleQuery(buf *readBuffer) error {
+	query, err := buf.getString()
 	if err != nil {
 		return err
 	}
@@ -154,76 +154,75 @@ func (c *v3Conn) handleSimpleQuery(buf *bytes.Buffer) error {
 	return c.sendResponse(resp)
 }
 
-func (c *v3Conn) handleParse(buf *bytes.Buffer) error {
-	name, err := readString(buf)
+func (c *v3Conn) handleParse(buf *readBuffer) error {
+	name, err := buf.getString()
 	if err != nil {
 		return err
 	}
 	if _, ok := c.parsed[name]; ok && name != "" {
 		return util.Errorf("prepared statement %q already exists", name)
 	}
-	query, err := readString(buf)
+	query, err := buf.getString()
 	if err != nil {
 		return err
 	}
 	pq := parsedQuery{query: query}
-	var numTypes int16
-	if err := binary.Read(buf, binary.BigEndian, &numTypes); err != nil {
+	numTypes, err := buf.getInt16()
+	if err != nil {
 		return err
 	}
 	pq.types = make([]oid.Oid, numTypes)
 	for i := int16(0); i < numTypes; i++ {
-		var typ int32
-		if err := binary.Read(buf, binary.BigEndian, &typ); err != nil {
+		typ, err := buf.getInt32()
+		if err != nil {
 			return err
 		}
 		pq.types[i] = oid.Oid(typ)
 	}
 	c.parsed[name] = pq
-	return writeTypedMsg(c.conn, serverMsgParseComplete, nil)
+	c.writeBuf.init(serverMsgParseComplete)
+	return c.writeBuf.flush(c.conn)
 }
 
-func (c *v3Conn) sendCommandComplete(tag string) error {
-	var b bytes.Buffer
-	if err := writeString(&b, tag); err != nil {
-		return err
-	}
-	return writeTypedMsg(c.conn, serverMsgCommandComplete, b.Bytes())
+func (c *v3Conn) sendCommandComplete(tag []byte) error {
+	c.writeBuf.init(serverMsgCommandComplete)
+	c.writeBuf.Write(tag)
+	return c.writeBuf.flush(c.conn)
 }
 
 func (c *v3Conn) sendError(errToSend string) error {
-	var buf bytes.Buffer
-	if err := buf.WriteByte('S'); err != nil {
+	c.writeBuf.init(serverMsgErrorResponse)
+	if err := c.writeBuf.WriteByte('S'); err != nil {
 		return err
 	}
-	if err := writeString(&buf, "ERROR"); err != nil {
+	if err := c.writeBuf.writeString("ERROR"); err != nil {
 		return err
 	}
-	if err := buf.WriteByte('C'); err != nil {
+	if err := c.writeBuf.WriteByte('C'); err != nil {
 		return err
 	}
 	// "XX000" is "internal error".
 	// TODO(bdarnell): map our errors to appropriate postgres error
 	// codes as defined in
 	// http://www.postgresql.org/docs/9.2/static/errcodes-appendix.html
-	if err := writeString(&buf, "XX000"); err != nil {
+	if err := c.writeBuf.writeString("XX000"); err != nil {
 		return err
 	}
-	if err := buf.WriteByte('M'); err != nil {
+	if err := c.writeBuf.WriteByte('M'); err != nil {
 		return err
 	}
-	if err := writeString(&buf, errToSend); err != nil {
+	if err := c.writeBuf.writeString(errToSend); err != nil {
 		return err
 	}
-	if err := buf.WriteByte(0); err != nil {
+	if err := c.writeBuf.WriteByte(0); err != nil {
 		return err
 	}
-	return writeTypedMsg(c.conn, serverMsgErrorResponse, buf.Bytes())
+	return c.writeBuf.flush(c.conn)
 }
 
 func (c *v3Conn) sendResponse(resp driver.Response) error {
 	if len(resp.Results) == 0 {
-		return c.sendCommandComplete("")
+		return c.sendCommandComplete(nil)
 	}
 	for _, result := range resp.Results {
 		if result.Error != nil {
@@ -236,12 +235,14 @@ func (c *v3Conn) sendResponse(resp driver.Response) error {
 		switch result := result.GetUnion().(type) {
 		case *driver.Response_Result_DDL_:
 			// Send EmptyQueryResponse.
-			return writeTypedMsg(c.conn, serverMsgEmptyQuery, nil)
+			c.writeBuf.init(serverMsgEmptyQuery)
+			return c.writeBuf.flush(c.conn)
 
 		case *driver.Response_Result_RowsAffected:
 			// Send CommandComplete.
 			// TODO(bdarnell): tags for other types of commands.
-			tag := fmt.Sprintf("SELECT %d", result.RowsAffected)
+			n := copy(c.tagBuf[:], "SELECT ")
+			tag := strconv.AppendInt(c.tagBuf[n:], int64(result.RowsAffected), 32)
 			if err := c.sendCommandComplete(tag); err != nil {
 				return err
 			}
@@ -250,53 +251,43 @@ func (c *v3Conn) sendResponse(resp driver.Response) error {
 			resultRows := result.Rows
 
 			// Send RowDescription.
-			var rowDesc bytes.Buffer
-			if err := binary.Write(&rowDesc, binary.BigEndian, int16(len(resultRows.Columns))); err != nil {
-				return err
-			}
+			c.writeBuf.init(serverMsgRowDescription)
+			c.writeBuf.putInt16(int16(len(resultRows.Columns)))
 			for i, column := range resultRows.Columns {
-				if err := writeString(&rowDesc, column); err != nil {
+				if err := c.writeBuf.writeString(column); err != nil {
 					return err
 				}
 				// TODO(bdarnell): Use column metadata instead of first row.
 				typ := typeForDatum(resultRows.Rows[0].Values[i])
-				data := []interface{}{
-					int32(0), // Table OID (optional).
-					int16(0), // Column attribute ID (optional).
-					int32(typ.oid),
-					int16(typ.size),
-					int32(0), // Type modifier (none of our supported types have modifiers).
-					int16(typ.preferredFormat),
-				}
-				for _, x := range data {
-					if err := binary.Write(&rowDesc, binary.BigEndian, x); err != nil {
-						return err
-					}
-				}
+				c.writeBuf.putInt32(0) // Table OID (optional).
+				c.writeBuf.putInt16(0) // Column attribute ID (optional).
+				c.writeBuf.putInt32(int32(typ.oid))
+				c.writeBuf.putInt32(int32(typ.size))
+				c.writeBuf.putInt32(0) // Type modifier (none of our supported types have modifiers).
+				c.writeBuf.putInt16(int16(typ.preferredFormat))
 			}
-			if err := writeTypedMsg(c.conn, serverMsgRowDescription, rowDesc.Bytes()); err != nil {
+			if err := c.writeBuf.flush(c.conn); err != nil {
 				return err
 			}
 
 			// Send DataRows.
 			for _, row := range resultRows.Rows {
-				var dataRow bytes.Buffer
-				if err := binary.Write(&dataRow, binary.BigEndian, int16(len(row.Values))); err != nil {
-					return err
-				}
+				c.writeBuf.init(serverMsgDataRow)
+				c.writeBuf.putInt16(int16(len(row.Values)))
 				for _, col := range row.Values {
-					if err := writeDatum(&dataRow, col); err != nil {
+					if err := c.writeBuf.writeDatum(col); err != nil {
 						return err
 					}
 				}
-				if err := writeTypedMsg(c.conn, serverMsgDataRow, dataRow.Bytes()); err != nil {
+				if err := c.writeBuf.flush(c.conn); err != nil {
 					return err
 				}
 			}
 
 			// Send CommandComplete.
 			// TODO(bdarnell): tags for other types of commands.
-			tag := fmt.Sprintf("SELECT %d", len(resultRows.Rows))
+			n := copy(c.tagBuf[:], "SELECT ")
+			tag := strconv.AppendInt(c.tagBuf[n:], int64(len(resultRows.Rows)), 32)
 			if err := c.sendCommandComplete(tag); err != nil {
 				return err
 			}
