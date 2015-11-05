@@ -471,8 +471,8 @@ func (m *multiTestContext) restart() {
 	}
 }
 
-// replicateRange replicates the given range onto the given stores.
-func (m *multiTestContext) replicateRange(rangeID roachpb.RangeID, sourceStoreIndex int, dests ...int) {
+// replicateRangeNoWait replicates the given range onto the given stores.
+func (m *multiTestContext) replicateRangeNoWait(rangeID roachpb.RangeID, sourceStoreIndex int, dests ...int) *storage.Replica {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	rng, err := m.stores[sourceStoreIndex].GetReplica(rangeID)
@@ -483,13 +483,20 @@ func (m *multiTestContext) replicateRange(rangeID roachpb.RangeID, sourceStoreIn
 	for _, dest := range dests {
 		err = rng.ChangeReplicas(roachpb.ADD_REPLICA,
 			roachpb.ReplicaDescriptor{
-				NodeID:  m.stores[dest].Ident.NodeID,
-				StoreID: m.stores[dest].Ident.StoreID,
+				NodeID:  m.idents[dest].NodeID,
+				StoreID: m.idents[dest].StoreID,
 			}, rng.Desc())
 		if err != nil {
 			m.t.Fatal(err)
 		}
 	}
+	return rng
+}
+
+// replicateRange replicates the given range onto the given stores and
+// waits for it to be present on all destinations.
+func (m *multiTestContext) replicateRange(rangeID roachpb.RangeID, sourceStoreIndex int, dests ...int) {
+	rng := m.replicateRangeNoWait(rangeID, sourceStoreIndex, dests...)
 
 	// Wait for the replication to complete on all destination nodes.
 	util.SucceedsWithin(m.t, 3*time.Second, func() error {

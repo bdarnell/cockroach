@@ -1364,11 +1364,12 @@ func TestReplicateRogueRemovedNode(t *testing.T) {
 	finishWG.Wait()
 }
 
-func TestReplicateReAddAfterDown(t *testing.T) {
-	defer leaktest.AfterTest(t)
-
+// setupReplicateReAdd removes a node from a range and then re-adds
+// it. When this method returns, node 2 is stopped, and while it was
+// down it has been removed and re-added from the range. When it is
+// restarted it will replay both the removal and re-addition.
+func setupReplicateReAdd(t *testing.T) *multiTestContext {
 	mtc := startMultiTestContext(t, 3)
-	defer mtc.Stop()
 
 	// First put the range on all three nodes.
 	raftID := roachpb.RangeID(1)
@@ -1395,11 +1396,67 @@ func TestReplicateReAddAfterDown(t *testing.T) {
 	}
 	mtc.waitForValues(roachpb.Key("a"), 3*time.Second, []int64{16, 16, 5})
 
+	mtc.replicateRangeNoWait(raftID, 0, 2)
+
+	return mtc
+}
+
+// TestReplicateReAdd_FromLogNoGC removes a node and re-adds it via log
+// replays without allowing the node time to garbage collect its
+// replica. This re-uses the existing replica but changes its replica ID.
+func TestReplicateReAdd_FromLogNoGC(t *testing.T) {
+	defer leaktest.AfterTest(t)
+
+	mtc := setupReplicateReAdd(t)
+	defer mtc.Stop()
+
 	// Bring it back up and re-add the range.
 	// This re-uses the existing replica but changes its replica ID.
 	mtc.restartStore(2)
-	mtc.replicateRange(raftID, 0, 2)
+	// This is slightly racy, but good enough in practice. The test
+	// should pass whether the GC queue is stopped or not (the following
+	// test covers the case when the GC queue runs first).
+	mtc.stores[2].DisableReplicaGCQueue(true)
 
 	// The range should be synced back up.
+	mtc.waitForValues(roachpb.Key("a"), 3*time.Second, []int64{16, 16, 16})
+}
+
+func TestReplicateReAdd_FromLogAfterGC(t *testing.T) {
+	defer leaktest.AfterTest(t)
+
+	// This mutex will be acquired to prevent ChangeReplicas requests
+	// from being applied.
+	var blockChangeReplicas sync.Mutex
+
+	storage.TestingCommandFilter = func(args roachpb.Request, h roachpb.Header) error {
+		if et, ok := args.(*roachpb.EndTransactionRequest); ok {
+			if et.InternalCommitTrigger.ChangeReplicasTrigger != nil {
+				blockChangeReplicas.Lock()
+				blockChangeReplicas.Unlock()
+			}
+		}
+		return nil
+	}
+	defer func() {
+		storage.TestingCommandFilter = nil
+	}()
+
+	mtc := setupReplicateReAdd(t)
+	defer mtc.Stop()
+
+	mtc.manualClock.Increment(int64(storage.DefaultLeaderLeaseDuration+
+		storage.ReplicaGCQueueInactivityThreshold) + 1)
+	return
+
+	log.Infof("restarting store")
+	blockChangeReplicas.Lock()
+	mtc.restartStore(2)
+	log.Infof("gc scanning")
+	mtc.stores[2].ForceReplicaGCScan(t)
+	mtc.waitForValues(roachpb.Key("a"), 3*time.Second, []int64{16, 16, 0})
+	blockChangeReplicas.Unlock()
+
+	// The range should recover and sync back up.
 	mtc.waitForValues(roachpb.Key("a"), 3*time.Second, []int64{16, 16, 16})
 }
