@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
-	"reflect"
 	"unsafe"
 
 	"github.com/cockroachdb/cockroach/util"
@@ -78,12 +77,9 @@ func (b *readBuffer) getString() (string, error) {
 	// Note: this is a conversion from a byte slice to a string which avoids
 	// allocation and copying. It is safe because we never reuse the bytes in our
 	// read buffer. It is effectively the same as: "s := string(b.msg[0:pos])"
-	var s string
-	hdr := (*reflect.StringHeader)(unsafe.Pointer(&s))
-	hdr.Data = uintptr(unsafe.Pointer(&b.msg[0]))
-	hdr.Len = pos
+	s := b.msg[0:pos]
 	b.msg = b.msg[pos+1:]
-	return s, nil
+	return *((*string)(unsafe.Pointer(&s))), nil
 }
 
 func (b *readBuffer) getInt16() (int16, error) {
