@@ -132,13 +132,13 @@ func (b *writeBuffer) putInt64(v int64) {
 	b.Write(b.putbuf[:8])
 }
 
-func (b *writeBuffer) init(typ messageType) {
+func (b *writeBuffer) initMsg(typ messageType) {
 	b.Reset()
 	b.Write(b.putbuf[:5]) // message type + message length
 	b.Bytes()[0] = byte(typ)
 }
 
-func (b *writeBuffer) flush(w io.Writer) error {
+func (b *writeBuffer) finishMsg(w io.Writer) error {
 	bytes := b.Bytes()
 	binary.BigEndian.PutUint32(bytes[1:5], uint32(b.Len()-1))
 	_, err := w.Write(bytes)

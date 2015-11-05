@@ -56,7 +56,8 @@ type parsedQuery struct {
 }
 
 type v3Conn struct {
-	conn     net.Conn
+	rd       *bufio.Reader
+	wr       *bufio.Writer
 	opts     map[string]string
 	executor *sql.Executor
 	parsed   map[string]parsedQuery
@@ -67,7 +68,8 @@ type v3Conn struct {
 
 func newV3Conn(conn net.Conn, data []byte, executor *sql.Executor) (*v3Conn, error) {
 	v3conn := &v3Conn{
-		conn:     conn,
+		rd:       bufio.NewReader(conn),
+		wr:       bufio.NewWriter(conn),
 		opts:     map[string]string{},
 		executor: executor,
 		parsed:   map[string]parsedQuery{},
@@ -97,21 +99,26 @@ func (c *v3Conn) parseOptions(data []byte) error {
 }
 
 func (c *v3Conn) serve() error {
-	rd := bufio.NewReader(c.conn)
 	// TODO(bdarnell): real auth flow. For now just accept anything.
-	c.writeBuf.init(serverMsgAuth)
+	c.writeBuf.initMsg(serverMsgAuth)
 	c.writeBuf.putInt32(authOK)
-	if err := c.writeBuf.flush(c.conn); err != nil {
+	if err := c.writeBuf.finishMsg(c.wr); err != nil {
+		return err
+	}
+	if err := c.wr.Flush(); err != nil {
 		return err
 	}
 	for {
 		// TODO(bdarnell): change the 'I' below based on transaction status.
-		c.writeBuf.init(serverMsgReady)
+		c.writeBuf.initMsg(serverMsgReady)
 		c.writeBuf.Write([]byte{'I'})
-		if err := c.writeBuf.flush(c.conn); err != nil {
+		if err := c.writeBuf.finishMsg(c.wr); err != nil {
 			return err
 		}
-		typ, err := c.readBuf.readTypedMsg(rd)
+		if err := c.wr.Flush(); err != nil {
+			return err
+		}
+		typ, err := c.readBuf.readTypedMsg(c.rd)
 		if err != nil {
 			return err
 		}
@@ -180,18 +187,18 @@ func (c *v3Conn) handleParse(buf *readBuffer) error {
 		pq.types[i] = oid.Oid(typ)
 	}
 	c.parsed[name] = pq
-	c.writeBuf.init(serverMsgParseComplete)
-	return c.writeBuf.flush(c.conn)
+	c.writeBuf.initMsg(serverMsgParseComplete)
+	return c.writeBuf.finishMsg(c.wr)
 }
 
 func (c *v3Conn) sendCommandComplete(tag []byte) error {
-	c.writeBuf.init(serverMsgCommandComplete)
+	c.writeBuf.initMsg(serverMsgCommandComplete)
 	c.writeBuf.Write(tag)
-	return c.writeBuf.flush(c.conn)
+	return c.writeBuf.finishMsg(c.wr)
 }
 
 func (c *v3Conn) sendError(errToSend string) error {
-	c.writeBuf.init(serverMsgErrorResponse)
+	c.writeBuf.initMsg(serverMsgErrorResponse)
 	if err := c.writeBuf.WriteByte('S'); err != nil {
 		return err
 	}
@@ -217,7 +224,10 @@ func (c *v3Conn) sendError(errToSend string) error {
 	if err := c.writeBuf.WriteByte(0); err != nil {
 		return err
 	}
-	return c.writeBuf.flush(c.conn)
+	if err := c.writeBuf.finishMsg(c.wr); err != nil {
+		return err
+	}
+	return c.wr.Flush()
 }
 
 func (c *v3Conn) sendResponse(resp driver.Response) error {
@@ -235,8 +245,8 @@ func (c *v3Conn) sendResponse(resp driver.Response) error {
 		switch result := result.GetUnion().(type) {
 		case *driver.Response_Result_DDL_:
 			// Send EmptyQueryResponse.
-			c.writeBuf.init(serverMsgEmptyQuery)
-			return c.writeBuf.flush(c.conn)
+			c.writeBuf.initMsg(serverMsgEmptyQuery)
+			return c.writeBuf.finishMsg(c.wr)
 
 		case *driver.Response_Result_RowsAffected:
 			// Send CommandComplete.
@@ -251,7 +261,7 @@ func (c *v3Conn) sendResponse(resp driver.Response) error {
 			resultRows := result.Rows
 
 			// Send RowDescription.
-			c.writeBuf.init(serverMsgRowDescription)
+			c.writeBuf.initMsg(serverMsgRowDescription)
 			c.writeBuf.putInt16(int16(len(resultRows.Columns)))
 			for i, column := range resultRows.Columns {
 				if err := c.writeBuf.writeString(column); err != nil {
@@ -266,20 +276,20 @@ func (c *v3Conn) sendResponse(resp driver.Response) error {
 				c.writeBuf.putInt32(0) // Type modifier (none of our supported types have modifiers).
 				c.writeBuf.putInt16(int16(typ.preferredFormat))
 			}
-			if err := c.writeBuf.flush(c.conn); err != nil {
+			if err := c.writeBuf.finishMsg(c.wr); err != nil {
 				return err
 			}
 
 			// Send DataRows.
 			for _, row := range resultRows.Rows {
-				c.writeBuf.init(serverMsgDataRow)
+				c.writeBuf.initMsg(serverMsgDataRow)
 				c.writeBuf.putInt16(int16(len(row.Values)))
 				for _, col := range row.Values {
 					if err := c.writeBuf.writeDatum(col); err != nil {
 						return err
 					}
 				}
-				if err := c.writeBuf.flush(c.conn); err != nil {
+				if err := c.writeBuf.finishMsg(c.wr); err != nil {
 					return err
 				}
 			}
