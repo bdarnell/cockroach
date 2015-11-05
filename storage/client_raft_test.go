@@ -1366,13 +1366,15 @@ func TestReplicateRogueRemovedNode(t *testing.T) {
 
 // setupReplicateReAdd prepares for various scenarios in which a store
 // is removed from a range and later re-added to it. When this method
-// returns, stores 1, 2, and 3 are stopped. The range is replicated to
-// stores 1 and 2, and store 3 has an old replica of the range that it
-// belives is still current. The specified key contains an integer
-// value 3 on the current stores and 2 on the outdated store 3. Store
-// 0 is still running and contains the system keyspace.
+// returns, stores 1-5 are stopped. The range is replicated to stores
+// 1-4, and store 5 has an old replica of the range that it belives is
+// still current (this is a 5-node cluster because we need to be able
+// to partially replicate a message without committing it). The
+// specified key contains an integer value 3 on the current stores and
+// 2 on the outdated store. Store 0 is still running and contains the
+// system keyspace.
 func setupReplicateReAdd(t *testing.T) (*multiTestContext, roachpb.RangeID, roachpb.Key) {
-	mtc := startMultiTestContext(t, 4)
+	mtc := startMultiTestContext(t, 6)
 
 	// Split the system range from the rest of the keyspace.
 	splitArgs := adminSplitArgs(roachpb.KeyMin, keys.SystemMax)
@@ -1389,28 +1391,29 @@ func setupReplicateReAdd(t *testing.T) (*multiTestContext, roachpb.RangeID, roac
 		t.Fatal(err)
 	}
 
-	// Move the data range from store 0 to stores 1-3.
-	mtc.replicateRange(rangeID, 0, 1, 2, 3)
-	mtc.waitForValues(key, 3*time.Second, []int64{2, 2, 2, 2})
+	// Move the data range from store 0 to stores 1-5.
+	mtc.replicateRange(rangeID, 0, 1, 2, 3, 4, 5)
+	mtc.waitForValues(key, 3*time.Second, []int64{2, 2, 2, 2, 2, 2})
 	mtc.unreplicateRange(rangeID, 0, 0)
-	mtc.waitForValues(key, 3*time.Second, []int64{0, 2, 2, 2})
+	mtc.waitForValues(key, 3*time.Second, []int64{0, 2, 2, 2, 2, 2})
 
-	// Stop store 3; while it is down remove the range from it. Since the node is
+	// Stop store 5; while it is down remove the range from it. Since the node is
 	// down it won't see the removal and clean up its replica.
-	mtc.stopStore(3)
+	mtc.stopStore(5)
 	mtc.expireLeaderLeases()
-	mtc.unreplicateRange(rangeID, 1, 3)
+	mtc.unreplicateRange(rangeID, 1, 5)
 
 	// Perform another write to the two live stores.
 	incArgs = incrementArgs(key, 3)
 	if _, err := client.SendWrapped(mtc.distSender, nil, &incArgs); err != nil {
 		t.Fatal(err)
 	}
-	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 2})
+	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 5, 5, 2})
 
 	// Stop the remaining stores.
-	mtc.stopStore(1)
-	mtc.stopStore(2)
+	for i := 1; i < 5; i++ {
+		mtc.stopStore(i)
+	}
 	mtc.expireLeaderLeases()
 
 	log.Infof("setup done")
@@ -1427,16 +1430,17 @@ func TestReplicateReAdd_FromLogNoGC(t *testing.T) {
 	mtc, rangeID, key := setupReplicateReAdd(t)
 	defer mtc.Stop()
 
-	// Bring the stores back up and re-add the range. Start store 3
+	// Bring the stores back up and re-add the range. Start store 5
 	// first so we can disable its GC queue before the other stores talk
 	// to it.
-	mtc.restartStore(3)
-	mtc.stores[3].DisableReplicaGCQueue(true)
-	mtc.restartStore(1)
-	mtc.restartStore(2)
-	mtc.replicateRange(rangeID, 1, 3)
+	mtc.restartStore(5)
+	mtc.stores[5].DisableReplicaGCQueue(true)
+	for i := 1; i < 5; i++ {
+		mtc.restartStore(i)
+	}
+	mtc.replicateRange(rangeID, 1, 5)
 
-	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 5})
+	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 5, 5, 5})
 }
 
 func TestReplicateReAdd_FromLogGCRace(t *testing.T) {
@@ -1465,14 +1469,22 @@ func TestReplicateReAdd_FromLogGCRace(t *testing.T) {
 	mtc.manualClock.Increment(int64(storage.DefaultLeaderLeaseDuration+
 		storage.ReplicaGCQueueInactivityThreshold) + 1)
 
+	mtc.restartStore(1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		mtc.replicateRange(rangeID, 1, 5)
+		wg.Done()
+	}()
+
 	log.Infof("restarting store")
 	blockChangeReplicas.Lock()
-	mtc.restartStore(3)
+	mtc.restartStore(5)
 	log.Infof("gc scanning")
-	mtc.stores[3].ForceReplicaGCScan(t)
-	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 0})
+	mtc.stores[5].ForceReplicaGCScan(t)
+	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 5, 5, 0})
 	blockChangeReplicas.Unlock()
 
 	// The range should recover and sync back up.
-	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 5})
+	mtc.waitForValues(key, 3*time.Second, []int64{0, 5, 5, 5, 5, 5})
 }
