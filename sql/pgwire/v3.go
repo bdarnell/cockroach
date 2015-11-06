@@ -297,7 +297,8 @@ func (c *v3Conn) sendResponse(resp driver.Response) error {
 			// Send CommandComplete.
 			// TODO(bdarnell): tags for other types of commands.
 			n := copy(c.tagBuf[:], "SELECT ")
-			tag := strconv.AppendInt(c.tagBuf[n:], int64(len(resultRows.Rows)), 32)
+			tag := c.tagBuf[:n]
+			tag = appendUint(tag, uint(len(resultRows.Rows)))
 			if err := c.sendCommandComplete(tag); err != nil {
 				return err
 			}
@@ -305,4 +306,26 @@ func (c *v3Conn) sendResponse(resp driver.Response) error {
 	}
 
 	return nil
+}
+
+func appendUint(in []byte, u uint) []byte {
+	var buf []byte
+	if cap(in)-len(in) >= 10 {
+		buf = in[len(in) : len(in)+10]
+	} else {
+		buf = make([]byte, 10)
+	}
+	i := len(buf)
+
+	for u >= 10 {
+		i--
+		q := u / 10
+		buf[i] = byte(u - q*10 + '0')
+		u = q
+	}
+	// u < 10
+	i--
+	buf[i] = byte(u + '0')
+
+	return append(in, buf[i:]...)
 }

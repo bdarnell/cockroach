@@ -40,6 +40,26 @@ type readBuffer struct {
 	tmp [4]byte
 }
 
+// reset sets b.msg to exactly size, attempting to use spare capacity at the
+// end of the exist slice when possible and allocating a new slice when
+// necessary.
+func (b *readBuffer) reset(size int) {
+	if b.msg != nil {
+		b.msg = b.msg[len(b.msg):]
+	}
+
+	if cap(b.msg) >= size {
+		b.msg = b.msg[:size]
+		return
+	}
+
+	allocSize := size
+	if allocSize < 4096 {
+		allocSize = 4096
+	}
+	b.msg = make([]byte, size, allocSize)
+}
+
 // readMsg reads a length-prefixed message. It is only used directly
 // during the authentication phase of the protocol; readTypedMsg is
 // used at all other times.
@@ -47,14 +67,15 @@ func (b *readBuffer) readUntypedMsg(rd io.Reader) error {
 	if _, err := io.ReadFull(rd, b.tmp[:]); err != nil {
 		return err
 	}
-	size := int32(binary.BigEndian.Uint32(b.tmp[:]))
+	size := int(binary.BigEndian.Uint32(b.tmp[:]))
 	// size includes itself.
 	size -= 4
 	if size > maxMessageSize || size < 0 {
 		return util.Errorf("message size %d out of bounds (0..%d)",
 			size, maxMessageSize)
 	}
-	b.msg = make([]byte, size)
+
+	b.reset(size)
 	_, err := io.ReadFull(rd, b.msg)
 	return err
 }
