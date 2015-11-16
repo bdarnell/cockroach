@@ -1,0 +1,10 @@
+go test -tags ''  -i ./multiraft
+go test -tags ''  -run - -bench . ./multiraft -timeout 5m -benchmem -count 10 
+PASS
+BenchmarkSubmitCommand1Node1Pending-4 	  100000	     22656 ns/op	    2519 B/op	      30 allocs/op
+BenchmarkSubmitCommand1Node1Pending-4 	  100000	     22609 ns/op	    2519 B/op	      30 allocs/op
+BenchmarkSubmitCommand1Node1Pending-4 	  100000	     22901 ns/op	    2519 B/op	      30 allocs/op
+BenchmarkSubmitCommand1Node1Pending-4 	  100000	     23282 ns/op	    2519 B/op	      30 allocs/op
+BenchmarkSubmitCommand1Node1Pending-4 	  100000	     23207 ns/op	    2519 B/op	      30 allocs/op
+BenchmarkSubmitCommand1Node1Pending-4 	  100000	     23666 ns/op	    2561 B/op	      30 allocs/op
+BenchmarkSubmitCommand1Node1Pending-4 	
