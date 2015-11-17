@@ -65,6 +65,7 @@ type Iterator interface {
 	unsafeValue() []byte
 	// Error returns the error, if any, which the iterator encountered.
 	Error() error
+	ComputeStats(ms *MVCCStats, start, end []byte, nowNanos int64) error
 }
 
 // Engine is the interface that wraps the core operations of a

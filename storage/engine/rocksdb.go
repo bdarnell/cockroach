@@ -816,27 +816,25 @@ func (r *rocksDBIterator) setState(state C.DBIterState) {
 	r.value = state.value
 }
 
-func (r *rocksDBIterator) ComputeStats(start, end []byte, nowNanos int64) (MVCCStats, error) {
+func (r *rocksDBIterator) ComputeStats(ms *MVCCStats, start, end []byte, nowNanos int64) error {
 	var result C.MVCCStats
 	result.last_update_nanos = C.int64_t(nowNanos)
 	status := C.MVCCComputeStats(r.iter, goToCSlice(start), goToCSlice(end), &result)
 	if err := statusToError(status); err != nil {
-		return MVCCStats{}, err
+		return err
 	}
-	ms := MVCCStats{
-		LiveBytes:       int64(result.live_bytes),
-		KeyBytes:        int64(result.key_bytes),
-		ValBytes:        int64(result.val_bytes),
-		IntentBytes:     int64(result.intent_bytes),
-		LiveCount:       int64(result.live_count),
-		KeyCount:        int64(result.key_count),
-		ValCount:        int64(result.val_count),
-		IntentCount:     int64(result.intent_count),
-		IntentAge:       int64(result.intent_age),
-		GCBytesAge:      int64(result.gc_bytes_age),
-		SysBytes:        int64(result.sys_bytes),
-		SysCount:        int64(result.sys_count),
-		LastUpdateNanos: int64(result.last_update_nanos),
-	}
-	return ms, nil
+	ms.LiveBytes += int64(result.live_bytes)
+	ms.KeyBytes += int64(result.key_bytes)
+	ms.ValBytes += int64(result.val_bytes)
+	ms.IntentBytes += int64(result.intent_bytes)
+	ms.LiveCount += int64(result.live_count)
+	ms.KeyCount += int64(result.key_count)
+	ms.ValCount += int64(result.val_count)
+	ms.IntentCount += int64(result.intent_count)
+	ms.IntentAge += int64(result.intent_age)
+	ms.GCBytesAge += int64(result.gc_bytes_age)
+	ms.SysBytes += int64(result.sys_bytes)
+	ms.SysCount += int64(result.sys_count)
+	ms.LastUpdateNanos = nowNanos
+	return nil
 }
