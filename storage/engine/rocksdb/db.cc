@@ -71,6 +71,7 @@ const int kKeyLocalRangePrefixSize = 4;
 const rocksdb::Slice kKeyLocalRangeIDPrefix("\x31\x00\xff\x00\xff\x00\xffi", 8);
 const rocksdb::Slice kKeyLocalRangePrefix("\x31\x00\xff\x00\xff\x00\xffk", 8);
 const rocksdb::Slice kKeyLocalTransactionSuffix("\x00\x01txn-", 6);
+const rocksdb::Slice kKeyLocalMax("\x00\x00\x01", 3);
 
 const DBStatus kSuccess = { NULL, 0 };
 
@@ -1233,4 +1234,105 @@ DBStatus DBMergeOne(DBSlice existing, DBSlice update, DBString* new_value) {
     return ToDBString("incompatible merge values");
   }
   return MergeResult(&meta, new_value);
+}
+
+DBStatus MVCCComputeStats(DBIterator* iter, DBSlice start, DBSlice end, MVCCStats *stats) {
+  const int mvcc_version_timestamp_size = 12;
+  const int64_t now_nanos = stats->last_update_nanos;
+
+  rocksdb::Iterator *const iter_rep = iter->rep;
+  iter_rep->Seek(ToSlice(start));
+  const rocksdb::Slice end_key = ToSlice(end);
+
+  cockroach::storage::engine::MVCCMetadata meta;
+  std::string decoded;
+  bool first = false;
+
+  for (; iter_rep->Valid() && iter_rep->key().compare(end_key) < 0; iter_rep->Next()) {
+    const rocksdb::Slice key = iter_rep->key();
+    const rocksdb::Slice value = iter_rep->value();
+
+    rocksdb::Slice buf = key;
+    decoded.clear();
+    if (!DecodeBytes(&buf, &decoded)) {
+      return ToDBString("unable to decoded key");
+    }
+
+    const bool isSys = (rocksdb::Slice(decoded).compare(kKeyLocalMax) < 0);
+    const bool isValue = (buf.size() == mvcc_version_timestamp_size);
+
+    if (!isValue) {
+      if (buf.size() != 0) {
+        return ToDBString("there should be 12 bytes for encoded timestamp");
+      }
+
+      const int64_t total_bytes = key.size() + value.size();
+      first = true;
+
+      if (!meta.ParseFromArray(value.data(), value.size())) {
+        return ToDBString("unable to decode MVCCMetadata");
+      }
+
+      if (isSys) {
+        stats->sys_bytes += total_bytes;
+        stats->sys_count++;
+      } else {
+        if (!meta.deleted()) {
+          stats->live_bytes += total_bytes;
+          stats->live_count++;
+        } else {
+          stats->gc_bytes_age += total_bytes * ((now_nanos - meta.timestamp().wall_time()) / 1e9);
+        }
+        stats->key_bytes += key.size();
+        stats->val_bytes += value.size();
+        stats->key_count++;
+        if (meta.has_value()) {
+          stats->val_count++;
+        }
+      }
+    } else {
+      const int64_t total_bytes = value.size() + mvcc_version_timestamp_size;
+      if (isSys) {
+        stats->sys_bytes += total_bytes;
+      } else {
+        if (first) {
+          first = false;
+          if (!meta.deleted()) {
+            stats->live_bytes += total_bytes;
+          } else {
+            stats->gc_bytes_age += total_bytes * ((now_nanos - meta.timestamp().wall_time()) / 1e9);
+          }
+          if (meta.has_txn()) {
+            stats->intent_bytes += total_bytes;
+            stats->intent_count++;
+            stats->intent_age += (now_nanos - meta.timestamp().wall_time()) / 1e9;
+          }
+          if (meta.key_bytes() != mvcc_version_timestamp_size) {
+            char buf[128];
+            const int n = snprintf(
+                buf, sizeof(buf), "expected mvcc metadata val bytes to equal %d; got %d",
+                mvcc_version_timestamp_size, int(meta.key_bytes()));
+            return ToDBString(rocksdb::Slice(buf, n));
+          }
+          if (meta.val_bytes() != value.size()) {
+            char buf[128];
+            const int n = snprintf(
+                buf, sizeof(buf), "expected mvcc metadata val bytes to equal %d; got %d",
+                int(value.size()), int(meta.val_bytes()));
+            return ToDBString(rocksdb::Slice(buf, n));
+          }
+        } else {
+          uint64_t wall_time;
+          if (!DecodeUint64Decreasing(&buf, &wall_time)) {
+            return ToDBString("unable to decode mvcc timestamp");
+          }
+          stats->gc_bytes_age += total_bytes * ((now_nanos - wall_time) / 1e9);
+        }
+        stats->key_bytes += mvcc_version_timestamp_size;
+        stats->val_bytes += value.size();
+        stats->val_count++;
+      }
+    }
+  }
+  return kSuccess;
 }

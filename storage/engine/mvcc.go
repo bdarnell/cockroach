@@ -1592,6 +1592,11 @@ func MVCCFindSplitKey(engine Engine, rangeID roachpb.RangeID, key, endKey roachp
 // the wall time in nanoseconds since the epoch and is used to compute
 // the total age of all intents.
 func MVCCComputeStats(iter Iterator, nowNanos int64) (MVCCStats, error) {
+	// TODO(pmattis): This is a hack. Do not submit!
+	if riter, ok := iter.(*rocksDBIterator); ok {
+		return riter.ComputeStats(roachpb.KeyMin, roachpb.KeyMax, nowNanos)
+	}
+
 	ms := MVCCStats{LastUpdateNanos: nowNanos}
 	first := false
 	meta := &MVCCMetadata{}

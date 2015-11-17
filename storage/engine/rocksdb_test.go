@@ -559,6 +559,14 @@ func runMVCCComputeStats(valueBytes int, b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
+
+		// iter := rocksdb.NewIterator().(*rocksDBIterator)
+		// var err error
+		// stats, err = iter.ComputeStats(roachpb.KeyMin, roachpb.KeyMax, 0)
+		// iter.Close()
+		// if err != nil {
+		// 	b.Fatal(err)
+		// }
 	}
 
 	b.StopTimer()

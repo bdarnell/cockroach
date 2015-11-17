@@ -815,3 +815,28 @@ func (r *rocksDBIterator) setState(state C.DBIterState) {
 	r.key = state.key
 	r.value = state.value
 }
+
+func (r *rocksDBIterator) ComputeStats(start, end []byte, nowNanos int64) (MVCCStats, error) {
+	var result C.MVCCStats
+	result.last_update_nanos = C.int64_t(nowNanos)
+	status := C.MVCCComputeStats(r.iter, goToCSlice(start), goToCSlice(end), &result)
+	if err := statusToError(status); err != nil {
+		return MVCCStats{}, err
+	}
+	ms := MVCCStats{
+		LiveBytes:       int64(result.live_bytes),
+		KeyBytes:        int64(result.key_bytes),
+		ValBytes:        int64(result.val_bytes),
+		IntentBytes:     int64(result.intent_bytes),
+		LiveCount:       int64(result.live_count),
+		KeyCount:        int64(result.key_count),
+		ValCount:        int64(result.val_count),
+		IntentCount:     int64(result.intent_count),
+		IntentAge:       int64(result.intent_age),
+		GCBytesAge:      int64(result.gc_bytes_age),
+		SysBytes:        int64(result.sys_bytes),
+		SysCount:        int64(result.sys_count),
+		LastUpdateNanos: int64(result.last_update_nanos),
+	}
+	return ms, nil
+}
