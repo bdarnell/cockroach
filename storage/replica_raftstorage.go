@@ -460,66 +460,69 @@ func (r *Replica) ApplySnapshot(snap raftpb.Snapshot) error {
 	// Extract the updated range descriptor.
 	desc := snapData.RangeDescriptor
 
-	batch := r.store.Engine().NewBatch()
-	defer batch.Close()
+	var lease *roachpb.Lease
+	if !snapData.IsSplit {
+		batch := r.store.Engine().NewBatch()
+		defer batch.Close()
 
-	// Delete everything in the range and recreate it from the snapshot.
-	iter := newReplicaDataIterator(&desc, r.store.Engine())
-	defer iter.Close()
-	for ; iter.Valid(); iter.Next() {
-		if err := batch.Clear(iter.Key()); err != nil {
-			return err
+		// Delete everything in the range and recreate it from the snapshot.
+		iter := newReplicaDataIterator(&desc, r.store.Engine())
+		defer iter.Close()
+		for ; iter.Valid(); iter.Next() {
+			if err := batch.Clear(iter.Key()); err != nil {
+				return err
+			}
 		}
-	}
 
-	// Write the snapshot into the range.
-	for _, kv := range snapData.KV {
-		if err := batch.Put(kv.Key, kv.Value); err != nil {
-			return err
+		// Write the snapshot into the range.
+		for _, kv := range snapData.KV {
+			if err := batch.Put(kv.Key, kv.Value); err != nil {
+				return err
+			}
 		}
-	}
 
-	// Restore the saved HardState.
-	if hardState == nil {
-		err := engine.MVCCDelete(batch, nil, hardStateKey, roachpb.ZeroTimestamp, nil)
+		// Restore the saved HardState.
+		if hardState == nil {
+			err := engine.MVCCDelete(batch, nil, hardStateKey, roachpb.ZeroTimestamp, nil)
+			if err != nil {
+				return err
+			}
+		} else {
+			err := engine.MVCCPut(batch, nil, hardStateKey, roachpb.ZeroTimestamp, *hardState, nil)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Read the leader lease.
+		lease, err = loadLeaderLease(batch, desc.RangeID)
 		if err != nil {
 			return err
 		}
-	} else {
-		err := engine.MVCCPut(batch, nil, hardStateKey, roachpb.ZeroTimestamp, *hardState, nil)
+
+		// Copy range stats to new range.
+		oldStats := r.stats
+		r.stats, err = newRangeStats(desc.RangeID, batch)
 		if err != nil {
+			r.stats = oldStats
 			return err
 		}
-	}
 
-	// Read the leader lease.
-	lease, err := loadLeaderLease(batch, desc.RangeID)
-	if err != nil {
-		return err
-	}
+		// The next line sets the persisted last index to the last applied index.
+		// This is not a correctness issue, but means that we may have just
+		// transferred some entries we're about to re-request from the leader and
+		// overwrite.
+		// However, raft.MultiNode currently expects this behaviour, and the
+		// performance implications are not likely to be drastic. If our feelings
+		// about this ever change, we can add a LastIndex field to
+		// raftpb.SnapshotMetadata.
+		if err := setLastIndex(batch, rangeID, snap.Metadata.Index); err != nil {
+			return err
+		}
 
-	// Copy range stats to new range.
-	oldStats := r.stats
-	r.stats, err = newRangeStats(desc.RangeID, batch)
-	if err != nil {
-		r.stats = oldStats
-		return err
-	}
-
-	// The next line sets the persisted last index to the last applied index.
-	// This is not a correctness issue, but means that we may have just
-	// transferred some entries we're about to re-request from the leader and
-	// overwrite.
-	// However, raft.MultiNode currently expects this behaviour, and the
-	// performance implications are not likely to be drastic. If our feelings
-	// about this ever change, we can add a LastIndex field to
-	// raftpb.SnapshotMetadata.
-	if err := setLastIndex(batch, rangeID, snap.Metadata.Index); err != nil {
-		return err
-	}
-
-	if err := batch.Commit(); err != nil {
-		return err
+		if err := batch.Commit(); err != nil {
+			return err
+		}
 	}
 
 	// As outlined above, last and applied index are the same after applying
@@ -540,7 +543,9 @@ func (r *Replica) ApplySnapshot(snap raftpb.Snapshot) error {
 		return err
 	}
 
-	atomic.StorePointer(&r.lease, unsafe.Pointer(lease))
+	if lease != nil {
+		atomic.StorePointer(&r.lease, unsafe.Pointer(lease))
+	}
 	return nil
 }
 

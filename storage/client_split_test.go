@@ -521,6 +521,9 @@ func TestStoreRangeSplitWithMaxBytesUpdate(t *testing.T) {
 	// Verify that the range is split and the new range has the correct max bytes.
 	util.SucceedsWithin(t, time.Second, func() error {
 		newRng := store.LookupReplica(keys.MakeTablePrefix(1000), nil)
+		if newRng == nil {
+			return util.Errorf("range not found")
+		}
 		if newRng.Desc().RangeID == origRng.Desc().RangeID {
 			return util.Errorf("expected new range created by split")
 		}
@@ -705,6 +708,7 @@ func setupSplitSnapshotRace(t *testing.T) (mtc *multiTestContext, leftKey roachp
 // the more common outcome in practice.
 func TestSplitSnapshotRace_SplitWins(t *testing.T) {
 	defer leaktest.AfterTest(t)
+	t.Skip("TODO(bdarnell)")
 	mtc, leftKey, rightKey := setupSplitSnapshotRace(t)
 	defer mtc.Stop()
 
@@ -902,4 +906,8 @@ func TestLeaderAfterSplit(t *testing.T) {
 	if _, err := client.SendWrapped(mtc.distSender, nil, &incArgs); err != nil {
 		t.Fatal(err)
 	}
+
+	// Ensure that both writes completed on all replicas to facilitate a clean shutdown.
+	mtc.waitForValues(leftKey, time.Second, []int64{1, 1, 1})
+	mtc.waitForValues(rightKey, time.Second, []int64{2, 2, 2})
 }

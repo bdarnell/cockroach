@@ -126,7 +126,14 @@ message RaftSnapshotData {
     optional bytes key = 1;
     optional bytes value = 2;
   }
-  // The latest RangeDescriptor
+  // The latest RangeDescriptor.
   optional RangeDescriptor range_descriptor = 1 [(gogoproto.nullable) = false];
-  repeated KeyValue KV = 2 [(gogoproto.customname) = "KV"];
+
+  // If this snapshot is created by a split, no key/value data will
+  // be sent since they are already present. Splits generate snapshots
+  // internally to update the new range's descriptor.
+  optional bool is_split = 2 [(gogoproto.nullable) = false];
+
+  // Raw key/value data.
+  repeated KeyValue kv = 3 [(gogoproto.customname) = "KV"];
 }

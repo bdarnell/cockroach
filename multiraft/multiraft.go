@@ -112,10 +112,6 @@ type MultiRaft struct {
 	callbackChan chan func()
 }
 
-// multiraftServer is a type alias to separate RPC methods
-// (which net/rpc finds via reflection) from others.
-type multiraftServer MultiRaft
-
 // NewMultiRaft creates a MultiRaft object.
 func NewMultiRaft(nodeID roachpb.NodeID, storeID roachpb.StoreID, config *Config, stopper *stop.Stopper) (*MultiRaft, error) {
 	if nodeID <= 0 {
@@ -165,7 +161,7 @@ func NewMultiRaft(nodeID roachpb.NodeID, storeID roachpb.StoreID, config *Config
 		callbackChan:    make(chan func()),
 	}
 
-	if err := m.Transport.Listen(storeID, (*multiraftServer)(m)); err != nil {
+	if err := m.Transport.Listen(storeID, m); err != nil {
 		return nil, err
 	}
 
@@ -180,11 +176,11 @@ func (m *MultiRaft) Start() {
 // RaftMessage implements ServerInterface; this method is called by net/rpc
 // when we receive a message. It returns as soon as the request has been
 // enqueued without waiting for it to be processed.
-func (ms *multiraftServer) RaftMessage(req *RaftMessageRequest) (*RaftMessageResponse, error) {
+func (m *MultiRaft) RaftMessage(req *RaftMessageRequest) (*RaftMessageResponse, error) {
 	select {
-	case ms.reqChan <- req:
+	case m.reqChan <- req:
 		return nil, nil
-	case <-ms.stopper.ShouldStop():
+	case <-m.stopper.ShouldStop():
 		return nil, ErrStopped
 	}
 }
@@ -1215,6 +1211,9 @@ func (s *state) processCommittedEntry(groupID roachpb.RangeID, g *group, entry r
 // sendMessage sends a raft message on the given group. Coalesced heartbeats
 // address nodes, not groups; they will use the noGroup constant as groupID.
 func (s *state) sendMessage(g *group, msg raftpb.Message) {
+	if msg.To == 0 && msg.Type == raftpb.MsgAppResp {
+		return
+	}
 	if log.V(6) {
 		log.Infof("node %v sending message %.200s to %v", s.nodeID,
 			raft.DescribeMessage(msg, s.EntryFormatter), msg.To)

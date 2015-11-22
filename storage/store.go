@@ -259,6 +259,7 @@ type Store struct {
 	replicas       map[roachpb.RangeID]*Replica // Map of replicas by Range ID
 	replicasByKey  *btree.BTree                 // btree keyed by ranges end keys.
 	uninitReplicas map[roachpb.RangeID]*Replica // Map of uninitialized replicas by Range ID
+	replicaInit    *sync.Cond                   // Signaled when replica becomes initialized.
 }
 
 var _ client.Sender = &Store{}
@@ -366,6 +367,7 @@ func NewStore(ctx StoreContext, eng engine.Engine, nodeDesc *roachpb.NodeDescrip
 		removeReplicaChan: make(chan removeReplicaOp),
 		proposeChan:       make(chan proposeOp),
 	}
+	s.replicaInit = sync.NewCond(&s.mu)
 
 	// Add range scanner and configure with queues.
 	s.scanner = newReplicaScanner(ctx.ScanInterval, ctx.ScanMaxIdleTime, newStoreRangeSet(s))
@@ -941,70 +943,91 @@ func (s *Store) SplitRange(origRng, newRng *Replica) error {
 		return util.Errorf("orig range is not splittable by new range: %+v, %+v", origDesc, newDesc)
 	}
 
-	// Here be concurrency dragons: we must release the lock in order to
-	// call multiraft.RemoveGroup (see lock order comments at the
-	// declaration of store.mu). The range may be recreated by an
-	// incoming raft message while the lock is released, so we must
-	// retry until it stays gone after we reacquire the lock. Replicas
-	// are only created in two places (after startup): this method
-	// creates initialized replicas (and this method cannot race with
-	// itself because it is only called on the processRaft goroutine),
-	// and GroupStorage creates uninitialized replicas. Uninitialized
-	// replicas can only become initialized by the application of an
-	// initial snapshot, which will be blocked as long as we have not
-	// yet updated replicasByKey. Therefore we do not need to worry
-	// about initialized replicas being created concurrently, only
-	// uninitialized ones.
-	s.mu.Lock()
-	for {
-		if _, ok := s.uninitReplicas[newDesc.RangeID]; !ok {
-			break
-		}
-		// If we have an uninitialized replica of the new range, delete it
-		// to make way for the complete one created by the split. A live
-		// uninitialized multiraft group cannot be converted to an
-		// initialized one (because of the tricks we do to change
-		// FirstIndex from 0 to raftInitialLogIndex), so the group must be
-		// removed before we install the new range into s.replicas.
-		delete(s.uninitReplicas, newDesc.RangeID)
-		delete(s.replicas, newDesc.RangeID)
-		s.mu.Unlock()
-		if err := s.multiraft.RemoveGroup(newDesc.RangeID); err != nil {
-			return util.Errorf("couldn't remove uninitialized range's group %d: %s", newDesc.RangeID, err)
-		}
+	// Update metadata for the left range. We must release the lock
+	// before calling multiraft.RaftMessage below to avoid deadlocks.
+	updateLeftRange := func() error {
 		s.mu.Lock()
+		defer s.mu.Unlock()
+		// Replace the end key of the original range with the start key of
+		// the new range. Reinsert the range since the btree is keyed by range end keys.
+		if s.replicasByKey.Delete(origRng) == nil {
+			return util.Errorf("couldn't find range %s in rangesByKey btree", origRng)
+		}
+
+		copyDesc := *origDesc
+		copyDesc.EndKey = append([]byte(nil), newDesc.StartKey...)
+		origRng.setDescWithoutProcessUpdate(&copyDesc)
+
+		if s.replicasByKey.ReplaceOrInsert(origRng) != nil {
+			return util.Errorf("couldn't insert range %v in rangesByKey btree", origRng)
+		}
+		return nil
 	}
-	// The lock is held without interruption for the remainder of this method.
-	defer s.mu.Unlock()
-
-	// Replace the end key of the original range with the start key of
-	// the new range. Reinsert the range since the btree is keyed by range end keys.
-	if s.replicasByKey.Delete(origRng) == nil {
-		return util.Errorf("couldn't find range %s in rangesByKey btree", origRng)
-	}
-
-	copyDesc := *origDesc
-	copyDesc.EndKey = append([]byte(nil), newDesc.StartKey...)
-	origRng.setDescWithoutProcessUpdate(&copyDesc)
-
-	if s.replicasByKey.ReplaceOrInsert(origRng) != nil {
-		return util.Errorf("couldn't insert range %v in rangesByKey btree", origRng)
-	}
-
-	if err := s.addReplicaInternal(newRng); err != nil {
-		return util.Errorf("couldn't insert range %v in rangesByKey btree: %s", newRng, err)
-	}
-
-	// Update the max bytes and other information of the new range.
-	// This may not happen if the system config has not yet been loaded.
-	// Since this is done under the store lock, system config update will
-	// properly set these fields.
-	if err := newRng.updateRangeInfo(); err != nil {
+	if err := updateLeftRange(); err != nil {
 		return err
 	}
 
-	s.feed.splitRange(origRng, newRng)
-	return s.processRangeDescriptorUpdateLocked(origRng)
+	// Synthesize a snapshot to create and initialize the new range.
+	_, replDesc := newDesc.FindReplica(s.StoreID())
+	if replDesc == nil {
+		return util.Errorf("could not find own replica in descriptor")
+	}
+
+	var cs raftpb.ConfState
+	for _, rep := range newDesc.Replicas {
+		cs.Nodes = append(cs.Nodes, uint64(rep.ReplicaID))
+	}
+
+	snapData := roachpb.RaftSnapshotData{
+		RangeDescriptor: *newDesc,
+		IsSplit:         true,
+	}
+	encodedSnapData, err := snapData.Marshal()
+	if err != nil {
+		return err
+	}
+	message := &multiraft.RaftMessageRequest{
+		GroupID:     newDesc.RangeID,
+		FromReplica: *replDesc,
+		ToReplica:   *replDesc,
+		Message: raftpb.Message{
+			Type:    raftpb.MsgSnap,
+			To:      uint64(replDesc.ReplicaID),
+			From:    0,
+			Term:    raftInitialLogTerm - 1,
+			LogTerm: raftInitialLogTerm,
+			Index:   raftInitialLogIndex,
+			Commit:  raftInitialLogIndex,
+			Snapshot: raftpb.Snapshot{
+				Data: encodedSnapData,
+				Metadata: raftpb.SnapshotMetadata{
+					ConfState: cs,
+					Index:     raftInitialLogIndex,
+					Term:      raftInitialLogTerm,
+				},
+			},
+		},
+	}
+	if _, err := s.multiraft.RaftMessage(message); err != nil {
+		return err
+	}
+
+	// Wait for the replica to become initialized (either by the
+	// snapshot we just sent or another one sent by the new group's
+	// leader). This is not strictly necessary for production use, but
+	// our tests rely on both ranges being ready once a split returns.
+	s.mu.Lock()
+	for {
+		_, found := s.replicas[newDesc.RangeID]
+		_, uninit := s.uninitReplicas[newDesc.RangeID]
+		if found && !uninit {
+			break
+		}
+		s.replicaInit.Wait()
+	}
+	s.mu.Unlock()
+
+	return nil
 }
 
 // MergeRange expands the subsuming range to absorb the subsumed range.
@@ -1167,6 +1190,7 @@ func (s *Store) processRangeDescriptorUpdateLocked(rng *Replica) error {
 		return util.Errorf("range for key %v already exists in rangesByKey btree",
 			(exRngItem.(*Replica)).getKey())
 	}
+	s.replicaInit.Broadcast()
 	return nil
 }
 

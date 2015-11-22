@@ -1029,7 +1029,10 @@ func TestRangeDescriptorSnapshotRace(t *testing.T) {
 
 				rng = mtc.stores[0].LookupReplica(roachpb.RKey("Z"), nil)
 				if rng == nil {
-					t.Fatal("failed to look up max range")
+					// During a split, the left range shrinks before the right
+					// range is created, leaving the right half briefly
+					// unavailable.
+					continue
 				}
 				_, err = rng.Snapshot()
 				if err != nil {

@@ -249,6 +249,14 @@ func createRange(s *Store, rangeID roachpb.RangeID, start, end roachpb.RKey) *Re
 		RangeID:  rangeID,
 		StartKey: start,
 		EndKey:   end,
+		Replicas: []roachpb.ReplicaDescriptor{
+			{
+				NodeID:    s.Ident.NodeID,
+				StoreID:   s.StoreID(),
+				ReplicaID: 1,
+			},
+		},
+		NextReplicaID: 2,
 	}
 	r, err := NewReplica(desc, s)
 	if err != nil {
@@ -692,6 +700,7 @@ func TestStoreSendBadRange(t *testing.T) {
 // See #702
 // TODO(bdarnell): convert tests that use this function to use AdminSplit instead.
 func splitTestRange(store *Store, key, splitKey roachpb.RKey, t *testing.T) *Replica {
+	t.Skip("needs to use adminsplit")
 	rng := store.LookupReplica(key, nil)
 	if rng == nil {
 		t.Fatalf("couldn't lookup range for key %q", key)

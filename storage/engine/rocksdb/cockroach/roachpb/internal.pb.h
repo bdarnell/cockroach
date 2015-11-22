@@ -776,10 +776,17 @@ class RaftSnapshotData : public ::google::protobuf::Message {
   ::cockroach::roachpb::RangeDescriptor* release_range_descriptor();
   void set_allocated_range_descriptor(::cockroach::roachpb::RangeDescriptor* range_descriptor);
 
-  // repeated .cockroach.roachpb.RaftSnapshotData.KeyValue KV = 2;
+  // optional bool is_split = 2;
+  bool has_is_split() const;
+  void clear_is_split();
+  static const int kIsSplitFieldNumber = 2;
+  bool is_split() const;
+  void set_is_split(bool value);
+
+  // repeated .cockroach.roachpb.RaftSnapshotData.KeyValue kv = 3;
   int kv_size() const;
   void clear_kv();
-  static const int kKVFieldNumber = 2;
+  static const int kKvFieldNumber = 3;
   const ::cockroach::roachpb::RaftSnapshotData_KeyValue& kv(int index) const;
   ::cockroach::roachpb::RaftSnapshotData_KeyValue* mutable_kv(int index);
   ::cockroach::roachpb::RaftSnapshotData_KeyValue* add_kv();
@@ -792,12 +799,15 @@ class RaftSnapshotData : public ::google::protobuf::Message {
  private:
   inline void set_has_range_descriptor();
   inline void clear_has_range_descriptor();
+  inline void set_has_is_split();
+  inline void clear_has_is_split();
 
   ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
   ::google::protobuf::uint32 _has_bits_[1];
   mutable int _cached_size_;
   ::cockroach::roachpb::RangeDescriptor* range_descriptor_;
   ::google::protobuf::RepeatedPtrField< ::cockroach::roachpb::RaftSnapshotData_KeyValue > kv_;
+  bool is_split_;
   friend void  protobuf_AddDesc_cockroach_2froachpb_2finternal_2eproto();
   friend void protobuf_AssignDesc_cockroach_2froachpb_2finternal_2eproto();
   friend void protobuf_ShutdownFile_cockroach_2froachpb_2finternal_2eproto();
@@ -1366,7 +1376,31 @@ inline void RaftSnapshotData::set_allocated_range_descriptor(::cockroach::roachp
   // @@protoc_insertion_point(field_set_allocated:cockroach.roachpb.RaftSnapshotData.range_descriptor)
 }
 
-// repeated .cockroach.roachpb.RaftSnapshotData.KeyValue KV = 2;
+// optional bool is_split = 2;
+inline bool RaftSnapshotData::has_is_split() const {
+  return (_has_bits_[0] & 0x00000002u) != 0;
+}
+inline void RaftSnapshotData::set_has_is_split() {
+  _has_bits_[0] |= 0x00000002u;
+}
+inline void RaftSnapshotData::clear_has_is_split() {
+  _has_bits_[0] &= ~0x00000002u;
+}
+inline void RaftSnapshotData::clear_is_split() {
+  is_split_ = false;
+  clear_has_is_split();
+}
+inline bool RaftSnapshotData::is_split() const {
+  // @@protoc_insertion_point(field_get:cockroach.roachpb.RaftSnapshotData.is_split)
+  return is_split_;
+}
+inline void RaftSnapshotData::set_is_split(bool value) {
+  set_has_is_split();
+  is_split_ = value;
+  // @@protoc_insertion_point(field_set:cockroach.roachpb.RaftSnapshotData.is_split)
+}
+
+// repeated .cockroach.roachpb.RaftSnapshotData.KeyValue kv = 3;
 inline int RaftSnapshotData::kv_size() const {
   return kv_.size();
 }
@@ -1374,25 +1408,25 @@ inline void RaftSnapshotData::clear_kv() {
   kv_.Clear();
 }
 inline const ::cockroach::roachpb::RaftSnapshotData_KeyValue& RaftSnapshotData::kv(int index) const {
-  // @@protoc_insertion_point(field_get:cockroach.roachpb.RaftSnapshotData.KV)
+  // @@protoc_insertion_point(field_get:cockroach.roachpb.RaftSnapshotData.kv)
   return kv_.Get(index);
 }
 inline ::cockroach::roachpb::RaftSnapshotData_KeyValue* RaftSnapshotData::mutable_kv(int index) {
-  // @@protoc_insertion_point(field_mutable:cockroach.roachpb.RaftSnapshotData.KV)
+  // @@protoc_insertion_point(field_mutable:cockroach.roachpb.RaftSnapshotData.kv)
   return kv_.Mutable(index);
 }
 inline ::cockroach::roachpb::RaftSnapshotData_KeyValue* RaftSnapshotData::add_kv() {
-  // @@protoc_insertion_point(field_add:cockroach.roachpb.RaftSnapshotData.KV)
+  // @@protoc_insertion_point(field_add:cockroach.roachpb.RaftSnapshotData.kv)
   return kv_.Add();
 }
 inline const ::google::protobuf::RepeatedPtrField< ::cockroach::roachpb::RaftSnapshotData_KeyValue >&
 RaftSnapshotData::kv() const {
-  // @@protoc_insertion_point(field_list:cockroach.roachpb.RaftSnapshotData.KV)
+  // @@protoc_insertion_point(field_list:cockroach.roachpb.RaftSnapshotData.kv)
   return kv_;
 }
 inline ::google::protobuf::RepeatedPtrField< ::cockroach::roachpb::RaftSnapshotData_KeyValue >*
 RaftSnapshotData::mutable_kv() {
-  // @@protoc_insertion_point(field_mutable_list:cockroach.roachpb.RaftSnapshotData.KV)
+  // @@protoc_insertion_point(field_mutable_list:cockroach.roachpb.RaftSnapshotData.kv)
   return &kv_;
 }
 

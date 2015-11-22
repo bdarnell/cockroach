@@ -127,9 +127,14 @@ func (*RaftTombstone) ProtoMessage()    {}
 // RaftSnapshotData is the payload of a raftpb.Snapshot. It contains a raw copy of
 // all of the range's data and metadata, including the raft log, sequence cache, etc.
 type RaftSnapshotData struct {
-	// The latest RangeDescriptor
-	RangeDescriptor RangeDescriptor              `protobuf:"bytes,1,opt,name=range_descriptor" json:"range_descriptor"`
-	KV              []*RaftSnapshotData_KeyValue `protobuf:"bytes,2,rep,name=KV" json:"KV,omitempty"`
+	// The latest RangeDescriptor.
+	RangeDescriptor RangeDescriptor `protobuf:"bytes,1,opt,name=range_descriptor" json:"range_descriptor"`
+	// If this snapshot is created by a split, no key/value data will
+	// be sent since they are already present. Splits generate snapshots
+	// internally to update the new range's descriptor.
+	IsSplit bool `protobuf:"varint,2,opt,name=is_split" json:"is_split"`
+	// Raw key/value data.
+	KV []*RaftSnapshotData_KeyValue `protobuf:"bytes,3,rep,name=kv" json:"kv,omitempty"`
 }
 
 func (m *RaftSnapshotData) Reset()         { *m = RaftSnapshotData{} }
@@ -332,9 +337,17 @@ func (m *RaftSnapshotData) MarshalTo(data []byte) (int, error) {
 		return 0, err
 	}
 	i += n3
+	data[i] = 0x10
+	i++
+	if m.IsSplit {
+		data[i] = 1
+	} else {
+		data[i] = 0
+	}
+	i++
 	if len(m.KV) > 0 {
 		for _, msg := range m.KV {
-			data[i] = 0x12
+			data[i] = 0x1a
 			i++
 			i = encodeVarintInternal(data, i, uint64(msg.Size()))
 			n, err := msg.MarshalTo(data[i:])
@@ -464,6 +477,7 @@ func (m *RaftSnapshotData) Size() (n int) {
 	_ = l
 	l = m.RangeDescriptor.Size()
 	n += 1 + l + sovInternal(uint64(l))
+	n += 2
 	if len(m.KV) > 0 {
 		for _, e := range m.KV {
 			l = e.Size()
@@ -1109,6 +1123,26 @@ func (m *RaftSnapshotData) Unmarshal(data []byte) error {
 			}
 			iNdEx = postIndex
 		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field IsSplit", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowInternal
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := data[iNdEx]
+				iNdEx++
+				v |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.IsSplit = bool(v != 0)
+		case 3:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field KV", wireType)
 			}
