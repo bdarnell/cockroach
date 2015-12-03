@@ -489,11 +489,8 @@ func MVCCGet(engine Engine, key roachpb.Key, timestamp roachpb.Timestamp, consis
 	defer iter.Close()
 
 	metaKey := mvccEncodeKey(buf.key[:0], key)
-	iter.Seek(metaKey)
-	if !iter.Valid() || bytes.Compare(iter.unsafeKey(), metaKey) != 0 {
-		return nil, nil, nil
-	}
-	if err := iter.ValueProto(&buf.meta); err != nil {
+	ok, _, _, err := mvccGetMetadata(iter, metaKey, &buf.meta)
+	if !ok || err != nil {
 		return nil, nil, err
 	}
 
@@ -504,6 +501,24 @@ func MVCCGet(engine Engine, key roachpb.Key, timestamp roachpb.Timestamp, consis
 		buf.value.Reset()
 	}
 	return value, intents, err
+}
+
+func mvccGetMetadata(iter Iterator, metaKey MVCCKey,
+	meta *MVCCMetadata) (ok bool, keyBytes, valBytes int64, err error) {
+	iter.Seek(metaKey)
+	if !iter.Valid() || !bytes.HasPrefix(iter.unsafeKey(), metaKey) {
+		return false, 0, 0, nil
+	}
+
+	if len(iter.unsafeKey()) == len(metaKey) {
+		if err := iter.ValueProto(meta); err != nil {
+			return false, 0, 0, err
+		}
+		return true, int64(len(iter.unsafeKey())), int64(len(iter.unsafeValue())), nil
+	}
+
+	_, meta.Timestamp, _, err = mvccDecodeKey(iter.unsafeKey(), nil)
+	return err == nil, 0, 0, err
 }
 
 // mvccGetInternal parses the MVCCMetadata from the specified raw key
@@ -601,7 +616,9 @@ func mvccGetInternal(iter Iterator, key roachpb.Key, metaKey MVCCKey,
 		seekKey = MVCCEncodeVersionKey(key, timestamp)
 	}
 
-	iter.Seek(seekKey)
+	if !bytes.Equal(iter.unsafeKey(), seekKey) {
+		iter.Seek(seekKey)
+	}
 	if !iter.Valid() {
 		if err := iter.Error(); err != nil {
 			return nil, nil, err
@@ -723,8 +740,11 @@ func mvccPutInternal(engine Engine, ms *MVCCStats, key roachpb.Key, timestamp ro
 		return emptyKeyError()
 	}
 
+	iter := engine.NewIterator(true /* prefix iteration */)
+	defer iter.Close()
+
 	metaKey := mvccEncodeKey(buf.key[:0], key)
-	ok, origMetaKeySize, origMetaValSize, err := engine.GetProto(metaKey, &buf.meta)
+	ok, origMetaKeySize, origMetaValSize, err := mvccGetMetadata(iter, metaKey, &buf.meta)
 	if err != nil {
 		return err
 	}
@@ -809,12 +829,15 @@ func mvccPutInternal(engine Engine, ms *MVCCStats, key roachpb.Key, timestamp ro
 	}
 
 	// Write the mvcc metadata now that we have sizes for the latest versioned value.
-	newMeta.KeyBytes = mvccVersionTimestampSize
-	newMeta.ValBytes = valueSize
-	newMeta.Deleted = value == nil
-	metaKeySize, metaValSize, err := PutProto(engine, metaKey, newMeta)
-	if err != nil {
-		return err
+	var metaKeySize, metaValSize int64
+	if newMeta.Txn != nil {
+		newMeta.KeyBytes = mvccVersionTimestampSize
+		newMeta.ValBytes = valueSize
+		newMeta.Deleted = value == nil
+		metaKeySize, metaValSize, err = PutProto(engine, metaKey, newMeta)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Update MVCC stats.
@@ -947,22 +970,28 @@ func MVCCDeleteRange(engine Engine, ms *MVCCStats, key, endKey roachpb.Key, max 
 	return num, nil
 }
 
-func getScanMetaKey(iter Iterator, encEndKey MVCCKey) (roachpb.Key, MVCCKey, error) {
+func getScanMeta(iter Iterator, encEndKey MVCCKey, meta *MVCCMetadata) (roachpb.Key, MVCCKey, error) {
 	metaKey := iter.Key()
 	if bytes.Compare(metaKey, encEndKey) >= 0 {
 		return nil, nil, iter.Error()
 	}
-	key, _, isValue, err := MVCCDecodeKey(metaKey)
+	key, ts, isValue, err := MVCCDecodeKey(metaKey)
 	if err != nil {
 		return nil, nil, err
 	}
 	if isValue {
-		return nil, nil, util.Errorf("expected an MVCC metadata key: %q", metaKey)
+		meta.Reset()
+		meta.Timestamp = ts
+		metaKey = metaKey[:len(metaKey)-int(mvccVersionTimestampSize)]
+		return key, metaKey, nil
+	}
+	if err := iter.ValueProto(meta); err != nil {
+		return nil, nil, err
 	}
 	return key, metaKey, nil
 }
 
-func getReverseScanMetaKey(iter Iterator, encEndKey MVCCKey) (roachpb.Key, MVCCKey, error) {
+func getReverseScanMeta(iter Iterator, encEndKey MVCCKey, meta *MVCCMetadata) (roachpb.Key, MVCCKey, error) {
 	metaKey := iter.Key()
 	// The metaKey < encEndKey is exceeding the boundary.
 	if bytes.Compare(metaKey, encEndKey) < 0 {
@@ -985,13 +1014,18 @@ func getReverseScanMetaKey(iter Iterator, encEndKey MVCCKey) (roachpb.Key, MVCCK
 		}
 
 		metaKey = iter.Key()
-		_, _, isValue, err = MVCCDecodeKey(metaKey)
+		meta.Reset()
+		_, meta.Timestamp, isValue, err = MVCCDecodeKey(metaKey)
 		if err != nil {
 			return nil, nil, err
 		}
 		if isValue {
-			return nil, nil, util.Errorf("expected an MVCC metadata key: %q", metaKey)
+			metaKey = metaKey[:len(metaKey)-int(mvccVersionTimestampSize)]
+			return key, metaKey, nil
 		}
+	}
+	if err := iter.ValueProto(meta); err != nil {
+		return nil, nil, err
 	}
 	return key, metaKey, nil
 }
@@ -1049,11 +1083,12 @@ func MVCCIterate(engine Engine, startKey, endKey roachpb.Key, timestamp roachpb.
 	buf := getBufferPool.Get().(*getBuffer)
 	defer getBufferPool.Put(buf)
 
-	// getMetaKeyFunc is used to get the key and the meta key of the logic row.
-	// encEndKey is used to judge whether iterator exceeds the boundary or not.
-	type getMetaKeyFunc func(iter Iterator, encEndKey MVCCKey) (roachpb.Key,
-		MVCCKey, error)
-	var getMetaKey getMetaKeyFunc
+	// getMetaFunc is used to get the meta, key and the meta key of the current
+	// row. encEndKey is used to judge whether iterator exceeds the boundary or
+	// not.
+	type getMetaFunc func(iter Iterator, encEndKey MVCCKey,
+		meta *MVCCMetadata) (roachpb.Key, MVCCKey, error)
+	var getMeta getMetaFunc
 
 	// We store encEndKey and encKey in the same buffer to avoid memory
 	// allocations.
@@ -1063,12 +1098,12 @@ func MVCCIterate(engine Engine, startKey, endKey roachpb.Key, timestamp roachpb.
 		encEndKey = mvccEncodeKey(buf.key[:0], startKey)
 		keyBuf = encEndKey[len(encEndKey):]
 		encKey = mvccEncodeKey(keyBuf, endKey)
-		getMetaKey = getReverseScanMetaKey
+		getMeta = getReverseScanMeta
 	} else {
 		encEndKey = mvccEncodeKey(buf.key[:0], endKey)
 		keyBuf = encEndKey[len(encEndKey):]
 		encKey = mvccEncodeKey(keyBuf, startKey)
-		getMetaKey = getScanMetaKey
+		getMeta = getScanMeta
 	}
 
 	// Get a new iterator.
@@ -1104,7 +1139,7 @@ func MVCCIterate(engine Engine, startKey, endKey roachpb.Key, timestamp roachpb.
 	var wiErr error
 
 	for {
-		key, metaKey, err := getMetaKey(iter, encEndKey)
+		key, metaKey, err := getMeta(iter, encEndKey, &buf.meta)
 		if err != nil {
 			return nil, err
 		}
@@ -1113,9 +1148,6 @@ func MVCCIterate(engine Engine, startKey, endKey roachpb.Key, timestamp roachpb.
 			break
 		}
 
-		if err := iter.ValueProto(&buf.meta); err != nil {
-			return nil, err
-		}
 		value, newIntents, err := mvccGetInternal(iter, key, metaKey, timestamp, consistent, txn, buf)
 		intents = append(intents, newIntents...)
 		if value != nil {
@@ -1150,8 +1182,8 @@ func MVCCIterate(engine Engine, startKey, endKey roachpb.Key, timestamp roachpb.
 				}
 				break
 			}
-			// Move the iterator back, which gets us into the previous row
-			// (getMetaKey moves us further back to the meta key).
+			// Move the iterator back, which gets us into the previous row (getMeta
+			// moves us further back to the meta key).
 			iter.Prev()
 			if !iter.Valid() {
 				if err := iter.Error(); err != nil {
@@ -1241,6 +1273,10 @@ func MVCCResolveWriteIntent(engine Engine, ms *MVCCStats, key roachpb.Key, times
 		if err != nil {
 			return err
 		}
+
+		// if err := engine.Clear(metaKey); err != nil {
+		// 	return err
+		// }
 
 		// Update stat counters related to resolving the intent.
 		updateStatsOnResolve(ms, key, origMetaKeySize, origMetaValSize, metaKeySize, metaValSize, &newMeta, commit, origAgeSeconds)
