@@ -56,7 +56,7 @@ func (kv *KeyValue) PrettyValue() string {
 	if kv.Value == nil {
 		return "nil"
 	}
-	switch kv.Value.Tag {
+	switch kv.Value.GetTag() {
 	case roachpb.ValueType_INT:
 		v, err := kv.Value.GetInt()
 		if err != nil {

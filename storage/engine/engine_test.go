@@ -365,7 +365,7 @@ func TestEngineMerge(t *testing.T) {
 				}...),
 			},
 		}
-		for _, tc := range testcases {
+		for j, tc := range testcases {
 			for i, update := range tc.merges {
 				if err := engine.Merge(tc.testKey, update); err != nil {
 					t.Fatalf("%d: %v", i, err)
@@ -380,7 +380,7 @@ func TestEngineMerge(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(resultV, expectedV) {
-				t.Errorf("unexpected append-merge result: %v != %v", resultV, expectedV)
+				t.Errorf("%d: unexpected append-merge result: %v != %v", j, resultV, expectedV)
 			}
 		}
 	}, t)

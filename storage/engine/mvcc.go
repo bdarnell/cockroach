@@ -714,9 +714,7 @@ func mvccGetInternal(iter Iterator, metaKey MVCCKey,
 	}
 
 	value := &buf.value
-	if err := iter.ValueProto(value); err != nil {
-		return nil, nil, err
-	}
+	value.RawBytes = iter.Value()
 	// Set the timestamp if the value is not nil (i.e. not a deletion tombstone).
 	ts := unsafeKey.Timestamp
 	value.Timestamp = &ts
@@ -870,12 +868,10 @@ func mvccPutInternal(engine Engine, ms *MVCCStats, key roachpb.Key, timestamp ro
 	versionKey := metaKey
 	versionKey.Timestamp = timestamp
 
-	var valueSize int64
+	var valueSize int
 	if value != nil {
-		// Make sure to zero the redundant timestamp (timestamp is encoded into the
-		// key, so don't need it in both places).
-		value.Timestamp = nil
-		_, valueSize, err = PutProto(engine, versionKey, value)
+		valueSize = len(value.RawBytes)
+		err = engine.Put(versionKey, value.RawBytes)
 	} else {
 		err = engine.Put(versionKey, nil)
 	}
@@ -888,7 +884,7 @@ func mvccPutInternal(engine Engine, ms *MVCCStats, key roachpb.Key, timestamp ro
 	// mvccVersionTimestampSize. The size of the metadata key is accounted for
 	// separately.
 	newMeta.KeyBytes = mvccVersionTimestampSize
-	newMeta.ValBytes = valueSize
+	newMeta.ValBytes = int64(valueSize)
 	newMeta.Deleted = value == nil
 
 	var metaKeySize, metaValSize int64
@@ -975,7 +971,7 @@ func MVCCConditionalPut(engine Engine, ms *MVCCStats, key roachpb.Key, timestamp
 
 	if expValPresent, existValPresent := expVal != nil, existVal != nil; expValPresent && existValPresent {
 		// Every type flows through here, so we can't use the typed getters.
-		if !(expVal.Tag == existVal.Tag && bytes.Equal(expVal.RawBytes, existVal.RawBytes)) {
+		if !bytes.Equal(expVal.RawBytes, existVal.RawBytes) {
 			return &roachpb.ConditionFailedError{
 				ActualValue: existVal,
 			}

@@ -1788,12 +1788,17 @@ func updateRangeDescriptor(b *client.Batch, descKey roachpb.Key, oldDesc, newDes
 	if err := newDesc.Validate(); err != nil {
 		return err
 	}
-	var oldValue []byte
+	// This is a bit subtle: If CPut is passed a nil as the expected value it
+	// expects the value to not exist. But a (interface{})(nil) !=
+	// ([]byte)(nil). So we're careful to construct an (interface{})(nil) when
+	// oldDesc is nil.
+	var oldValue interface{}
 	if oldDesc != nil {
-		var err error
-		if oldValue, err = proto.Marshal(oldDesc); err != nil {
+		oldBytes, err := proto.Marshal(oldDesc)
+		if err != nil {
 			return err
 		}
+		oldValue = oldBytes
 	}
 	newValue, err := proto.Marshal(newDesc)
 	if err != nil {

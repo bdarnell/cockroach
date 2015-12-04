@@ -199,7 +199,8 @@ func (p *planner) Insert(n *parser.Insert) (planNode, error) {
 		if log.V(2) {
 			log.Infof("CPut %s -> NULL", prettyKey(primaryIndexKey, 0))
 		}
-		b.CPut(primaryIndexKey, nil, nil)
+		// This is subtle: []byte(nil) != interface{}(nil).
+		b.CPut(primaryIndexKey, []byte(nil), nil)
 
 		// Write the row columns.
 		for i, val := range rowVals {

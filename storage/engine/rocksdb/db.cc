@@ -281,6 +281,23 @@ DBIterState DBIterGetState(DBIterator* iter) {
   return state;
 }
 
+bool ParseProtoFromValue(
+    const cockroach::roachpb::Value &val, google::protobuf::Message *msg) {
+  const std::string &s = val.raw_bytes();
+  if (s.size() < 5) {
+    return false;
+  }
+  return msg->ParseFromArray(s.data() + 5, s.size() - 5);
+}
+
+void SerializeProtoToValue(
+    cockroach::roachpb::Value *val, const google::protobuf::Message &msg) {
+  std::string *s = val->mutable_raw_bytes();
+  s->assign("\0\0\0\0\0", 5);
+  (*s)[4] = cockroach::roachpb::BYTES;
+  msg.AppendToString(s);
+}
+
 // DBCompactionFilter implements our garbage collection policy for
 // key/value pairs which can be considered in isolation. This
 // includes:
@@ -345,7 +362,7 @@ class DBCompactionFilter : public rocksdb::CompactionFilter {
     // system-wide minimum write intent is periodically computed via
     // map-reduce over all ranges and gossiped.
     cockroach::roachpb::Transaction txn;
-    if (!txn.ParseFromArray(meta.value().raw_bytes().data(), meta.value().raw_bytes().size())) {
+    if (!ParseProtoFromValue(meta.value(), &txn)) {
       // *error_msg = (char*)"failed to parse transaction entry";
       return false;
     }
@@ -497,11 +514,17 @@ bool TimeSeriesSampleOrdering(const cockroach::roachpb::InternalTimeSeriesSample
     return a->offset() < b->offset();
 }
 
+cockroach::roachpb::ValueType GetTag(const cockroach::roachpb::Value &val) {
+  if (val.raw_bytes().size() < 5) {
+    return cockroach::roachpb::UNKNOWN;
+  }
+  return cockroach::roachpb::ValueType(val.raw_bytes()[4]);
+}
+
 // IsTimeSeriesData returns true if the given protobuffer Value contains a
 // TimeSeriesData message.
-bool IsTimeSeriesData(const cockroach::roachpb::Value *val) {
-    return val->has_tag()
-        && val->tag() == cockroach::roachpb::TIMESERIES;
+bool IsTimeSeriesData(const cockroach::roachpb::Value &val) {
+  return GetTag(val) == cockroach::roachpb::TIMESERIES;
 }
 
 double GetMax(const cockroach::roachpb::InternalTimeSeriesSample *sample) {
@@ -534,6 +557,12 @@ void AccumulateTimeSeriesSamples(cockroach::roachpb::InternalTimeSeriesSample* d
     dest->set_count(total_count);
 }
 
+void SerializeTimeSeriesToValue(
+    cockroach::roachpb::Value *val, const cockroach::roachpb::InternalTimeSeriesData &ts) {
+  SerializeProtoToValue(val, ts);
+  (*val->mutable_raw_bytes())[4] = cockroach::roachpb::TIMESERIES;
+}
+
 // MergeTimeSeriesValues attempts to merge two Values which contain
 // InternalTimeSeriesData messages. The messages cannot be merged if they have
 // different start timestamps or sample durations. Returns true if the merge is
@@ -543,12 +572,12 @@ bool MergeTimeSeriesValues(cockroach::roachpb::Value *left, const cockroach::roa
     // Attempt to parse TimeSeriesData from both Values.
     cockroach::roachpb::InternalTimeSeriesData left_ts;
     cockroach::roachpb::InternalTimeSeriesData right_ts;
-    if (!left_ts.ParseFromString(left->raw_bytes())) {
+    if (!ParseProtoFromValue(*left, &left_ts)) {
         rocksdb::Warn(logger,
                 "left InternalTimeSeriesData could not be parsed from bytes.");
         return false;
     }
-    if (!right_ts.ParseFromString(right.raw_bytes())) {
+    if (!ParseProtoFromValue(right, &right_ts)) {
         rocksdb::Warn(logger,
                 "right InternalTimeSeriesData could not be parsed from bytes.");
         return false;
@@ -573,7 +602,7 @@ bool MergeTimeSeriesValues(cockroach::roachpb::Value *left, const cockroach::roa
     // full merge.
     if (!full_merge) {
         left_ts.MergeFrom(right_ts);
-        left_ts.SerializeToString(left->mutable_raw_bytes());
+        SerializeTimeSeriesToValue(left, left_ts);
         return true;
     }
 
@@ -625,7 +654,7 @@ bool MergeTimeSeriesValues(cockroach::roachpb::Value *left, const cockroach::roa
     }
 
     // Serialize the new TimeSeriesData into the left value's byte field.
-    new_ts.SerializeToString(left->mutable_raw_bytes());
+    SerializeTimeSeriesToValue(left, new_ts);
     return true;
 }
 
@@ -638,7 +667,7 @@ bool MergeTimeSeriesValues(cockroach::roachpb::Value *left, const cockroach::roa
 bool ConsolidateTimeSeriesValue(cockroach::roachpb::Value *val, rocksdb::Logger* logger) {
     // Attempt to parse TimeSeriesData from both Values.
     cockroach::roachpb::InternalTimeSeriesData val_ts;
-    if (!val_ts.ParseFromString(val->raw_bytes())) {
+    if (!ParseProtoFromValue(*val, &val_ts)) {
         rocksdb::Warn(logger,
                 "InternalTimeSeriesData could not be parsed from bytes.");
         return false;
@@ -673,7 +702,7 @@ bool ConsolidateTimeSeriesValue(cockroach::roachpb::Value *val, rocksdb::Logger*
     }
 
     // Serialize the new TimeSeriesData into the value's byte field.
-    new_ts.SerializeToString(val->mutable_raw_bytes());
+    SerializeTimeSeriesToValue(val, new_ts);
     return true;
 }
 
@@ -685,21 +714,22 @@ bool MergeValues(cockroach::roachpb::Value *left, const cockroach::roachpb::Valu
                     "inconsistent value types for merge (left = bytes, right = ?)");
             return false;
         }
-        if (IsTimeSeriesData(left) || IsTimeSeriesData(&right)) {
+        if (IsTimeSeriesData(*left) || IsTimeSeriesData(right)) {
             // The right operand must also be a time series.
-            if (!IsTimeSeriesData(left) || !IsTimeSeriesData(&right)) {
+            if (!IsTimeSeriesData(*left) || !IsTimeSeriesData(right)) {
                 rocksdb::Warn(logger,
                         "inconsistent value types for merging time series data (type(left) != type(right))");
                 return false;
             }
             return MergeTimeSeriesValues(left, right, full_merge, logger);
         } else {
-            *left->mutable_raw_bytes() += right.raw_bytes();
+            const std::string &rstr = right.raw_bytes();
+            left->mutable_raw_bytes()->append(rstr.data() + 5, rstr.size() - 5);
         }
         return true;
     } else {
         *left = right;
-        if (full_merge && IsTimeSeriesData(left)) {
+        if (full_merge && IsTimeSeriesData(*left)) {
             ConsolidateTimeSeriesValue(left, logger);
         }
         return true;
@@ -712,7 +742,6 @@ DBStatus MergeResult(cockroach::storage::engine::MVCCMetadata* meta, DBString* r
   // TODO(pmattis): Should recompute checksum here. Need a crc32
   // implementation and need to verify the checksumming is identical
   // to what is being done in Go. Zlib's crc32 should be sufficient.
-  meta->mutable_value()->clear_checksum();
   result->len = meta->ByteSize();
   result->data = static_cast<char*>(malloc(result->len));
   if (!meta->SerializeToArray(result->data, result->len)) {
