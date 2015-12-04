@@ -253,7 +253,7 @@ func TestBatchProto(t *testing.T) {
 	if valSize != int64(len(data)) {
 		t.Errorf("expected value size %d; got %d", len(data), valSize)
 	}
-	if !proto.Equal(getVal, &val) {
+	if !reflect.DeepEqual(getVal, &val) {
 		t.Errorf("expected %v; got %v", &val, getVal)
 	}
 	// Before commit, proto will not be available via engine.
@@ -267,7 +267,7 @@ func TestBatchProto(t *testing.T) {
 	if ok, _, _, err := e.GetProto(mvccKey("proto"), getVal); !ok || err != nil {
 		t.Fatalf("expected GetProto to success ok=%t: %s", ok, err)
 	}
-	if !proto.Equal(getVal, &val) {
+	if !reflect.DeepEqual(getVal, &val) {
 		t.Errorf("expected %v; got %v", &val, getVal)
 	}
 }

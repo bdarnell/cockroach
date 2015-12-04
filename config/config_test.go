@@ -21,8 +21,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gogo/protobuf/proto"
-
 	"github.com/cockroachdb/cockroach/config"
 	"github.com/cockroachdb/cockroach/keys"
 	"github.com/cockroachdb/cockroach/roachpb"
@@ -125,7 +123,7 @@ func TestGet(t *testing.T) {
 	cfg := config.SystemConfig{}
 	for tcNum, tc := range testCases {
 		cfg.Values = tc.values
-		if val := cfg.GetValue([]byte(tc.key)); !proto.Equal(val, tc.value) {
+		if val := cfg.GetValue([]byte(tc.key)); !reflect.DeepEqual(val, tc.value) {
 			t.Errorf("#%d: expected=%s, found=%s", tcNum, tc.value, val)
 		}
 	}
