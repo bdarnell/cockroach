@@ -78,7 +78,7 @@ message Value {
   // tag and value, in that order.
   optional bytes raw_bytes = 1;
   // Timestamp of value.
-  optional Timestamp timestamp = 2;
+  optional Timestamp timestamp = 2 [(gogoproto.nullable) = false];
 }
 
 // KeyValue is a pair of Key and Value for returned Key/Value pairs
