@@ -44,6 +44,7 @@ import (
 	"github.com/cockroachdb/cockroach/util/encoding"
 	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/cockroachdb/cockroach/util/tracer"
+	"github.com/coreos/etcd/raft"
 	"github.com/gogo/protobuf/proto"
 )
 
@@ -186,6 +187,9 @@ type Replica struct {
 		value roachpb.ReplicaDescriptor
 	}
 	truncatedState unsafe.Pointer // *roachpb.RaftTruncatedState
+
+	replicaID roachpb.ReplicaID
+	raftGroup *raft.RawNode
 }
 
 var _ client.Sender = &Replica{}
@@ -263,6 +267,61 @@ func (r *Replica) Destroy(origDesc roachpb.RangeDescriptor) error {
 	}
 
 	return batch.Commit()
+}
+
+func (r *Replica) setReplicaID(replicaID roachpb.ReplicaID) error {
+	r.Lock()
+	defer r.Unlock()
+	if r.replicaID == replicaID {
+		return nil
+	} else if r.replicaID > replicaID {
+		return util.Errorf("replicaID cannot move backwards")
+	} else if r.replicaID != 0 {
+		// TODO: clean up previous raftGroup (cancel pending commands, update peers)
+	}
+
+	desc := r.Desc()
+	raftCfg := &raft.Config{
+		ID:            uint64(replicaID),
+		Applied:       atomic.LoadUint64(&r.appliedIndex),
+		ElectionTick:  r.store.ctx.RaftElectionTimeoutTicks,
+		HeartbeatTick: r.store.ctx.RaftHeartbeatIntervalTicks,
+		Storage:       r,
+		// TODO(bdarnell): make these configurable; evaluate defaults.
+		MaxSizePerMsg:   1024 * 1024,
+		MaxInflightMsgs: 256,
+		Logger:          &raftLogger{group: uint64(desc.RangeID)},
+	}
+	raftGroup, err := raft.NewRawNode(raftCfg, nil)
+	if err != nil {
+		return err
+	}
+	r.replicaID = replicaID
+	r.raftGroup = raftGroup
+
+	// Automatically campaign and elect a leader for this group if there's
+	// exactly one known node for this group.
+	//
+	// A grey area for this being correct happens in the case when we're
+	// currently in the progress of adding a second node to the group,
+	// with the change committed but not applied.
+	// Upon restarting, the node would immediately elect itself and only
+	// then apply the config change, where really it should be applying
+	// first and then waiting for the majority (which would now require
+	// two votes, not only its own).
+	// However, in that special case, the second node has no chance to
+	// be elected master while this node restarts (as it's aware of the
+	// configuration and knows it needs two votes), so the worst that
+	// could happen is both nodes ending up in candidate state, timing
+	// out and then voting again. This is expected to be an extremely
+	// rare event.
+	if len(desc.Replicas) == 1 && desc.Replicas[0].StoreID == r.store.StoreID() {
+		if err := raftGroup.Campaign(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // context returns a context which is initialized with information about
