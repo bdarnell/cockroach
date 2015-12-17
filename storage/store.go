@@ -35,6 +35,7 @@ import (
 	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/storage/engine"
 	"github.com/cockroachdb/cockroach/util"
+	"github.com/cockroachdb/cockroach/util/cache"
 	"github.com/cockroachdb/cockroach/util/hlc"
 	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/cockroachdb/cockroach/util/retry"
@@ -52,6 +53,14 @@ const (
 	defaultRaftElectionTimeoutTicks = 15
 	// ttlStoreGossip is time-to-live for store-related info.
 	ttlStoreGossip = 2 * time.Minute
+
+	// TODO(bdarnell): Determine the right size for this cache. Should
+	// the cache be partitioned so that replica descriptors from the
+	// range descriptors (which are the bulk of the data and can be
+	// reloaded from disk as needed) don't crowd out the
+	// message/snapshot descriptors (whose necessity is short-lived but
+	// cannot be recovered through other means if evicted)?
+	maxReplicaDescCacheSize = 1000
 )
 
 var (
@@ -224,6 +233,11 @@ func (rs *storeRangeSet) EstimatedCount() int {
 	return len(rs.rangeIDs) - rs.visited
 }
 
+type replicaDescCacheKey struct {
+	groupID   roachpb.RangeID
+	replicaID roachpb.ReplicaID
+}
+
 // A Store maintains a map of ranges by start key. A Store corresponds
 // to one physical device.
 type Store struct {
@@ -258,6 +272,8 @@ type Store struct {
 	replicas       map[roachpb.RangeID]*Replica // Map of replicas by Range ID
 	replicasByKey  *btree.BTree                 // btree keyed by ranges end keys.
 	uninitReplicas map[roachpb.RangeID]*Replica // Map of uninitialized replicas by Range ID
+
+	replicaDescCache *cache.UnorderedCache
 }
 
 var _ client.Sender = &Store{}
@@ -364,6 +380,12 @@ func NewStore(ctx StoreContext, eng engine.Engine, nodeDesc *roachpb.NodeDescrip
 		nodeDesc:          nodeDesc,
 		removeReplicaChan: make(chan removeReplicaOp),
 		proposeChan:       make(chan proposeOp),
+		replicaDescCache: cache.NewUnorderedCache(cache.Config{
+			Policy: cache.CacheLRU,
+			ShouldEvict: func(size int, key, value interface{}) bool {
+				return size > maxReplicaDescCacheSize
+			},
+		}),
 	}
 
 	// Add range scanner and configure with queues.
@@ -1528,19 +1550,15 @@ func (s *Store) ProposeRaftCommand(idKey cmdIDKey, cmd roachpb.RaftCommand) <-ch
 func (s *Store) proposeRaftCommandImpl(idKey cmdIDKey, cmd roachpb.RaftCommand) <-chan error {
 	// If the range has been removed since the proposal started, drop it now.
 	s.mu.RLock()
-	_, ok := s.replicas[cmd.RangeID]
+	r, ok := s.replicas[cmd.RangeID]
 	s.mu.RUnlock()
 	if !ok {
 		ch := make(chan error, 1)
 		ch <- roachpb.NewRangeNotFoundError(cmd.RangeID)
 		return ch
 	}
-	// Lazily create group.
-	if err := s.multiraft.CreateGroup(cmd.RangeID); err != nil {
-		ch := make(chan error, 1)
-		ch <- err
-		return ch
-	}
+
+	// TODO(bdarnell): when group creation is lazy again, do it here.
 
 	data, err := proto.Marshal(&cmd)
 	if err != nil {
@@ -1561,6 +1579,7 @@ func (s *Store) proposeRaftCommandImpl(idKey cmdIDKey, cmd roachpb.RaftCommand) 
 			}
 		}
 	}
+	return r.raftGroup.Propose(en
 	return s.multiraft.SubmitCommand(cmd.RangeID, string(idKey), data)
 }
 
@@ -1669,6 +1688,9 @@ func (s *Store) GroupStorage(groupID roachpb.RangeID, replicaID roachpb.ReplicaI
 		if err != nil {
 			return nil, err
 		}
+		if err := r.setReplicaID(replicaID); err != nil {
+			return nil, err
+		}
 		// Add the range to range map, but not rangesByKey since
 		// the range's start key is unknown. The range will be
 		// added to rangesByKey later when a snapshot is applied.
@@ -1683,11 +1705,24 @@ func (s *Store) GroupStorage(groupID roachpb.RangeID, replicaID roachpb.ReplicaI
 // ReplicaDescriptor implements the multiraft.Storage interface.
 // The caller must hold the store's lock.
 func (s *Store) ReplicaDescriptor(groupID roachpb.RangeID, replicaID roachpb.ReplicaID) (roachpb.ReplicaDescriptor, error) {
+	if rep, ok := s.replicaDescCache.Get(replicaDescCacheKey{groupID, replicaID}); ok {
+		return rep.(roachpb.ReplicaDescriptor), nil
+	}
 	rep, err := s.getReplicaLocked(groupID)
 	if err != nil {
 		return roachpb.ReplicaDescriptor{}, err
 	}
-	return rep.ReplicaDescriptor(replicaID)
+	rd, err := rep.ReplicaDescriptor(replicaID)
+	if err != nil {
+		return roachpb.ReplicaDescriptor{}, err
+	}
+	s.cacheReplicaDescriptor(groupID, rd)
+
+	return rd, nil
+}
+
+func (s *Store) cacheReplicaDescriptor(groupID roachpb.RangeID, replica roachpb.ReplicaDescriptor) {
+	s.replicaDescCache.Add(replicaDescCacheKey{groupID, replica.ReplicaID}, replica)
 }
 
 // ReplicaIDForStore implements the multiraft.Storage interface.
