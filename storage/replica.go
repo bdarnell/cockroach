@@ -225,6 +225,13 @@ func NewReplica(desc *roachpb.RangeDescriptor, store *Store) (*Replica, error) {
 	}
 	atomic.StorePointer(&r.lease, unsafe.Pointer(lease))
 
+	_, repDesc := desc.FindReplica(store.StoreID())
+	if repDesc != nil {
+		if err := r.setReplicaID(repDesc.ReplicaID); err != nil {
+			return nil, err
+		}
+	}
+
 	if r.ContainsKey(keys.SystemDBSpan.Key) {
 		r.maybeGossipSystemConfig()
 	}
@@ -980,6 +987,7 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchReques
 	if err != nil {
 		return nil, err
 	}
+	defer r.store.checkRaftGroup(desc.RangeID)
 	for _, union := range raftCmd.Cmd.Requests {
 		args := union.GetInner()
 		etr, ok := args.(*roachpb.EndTransactionRequest)
@@ -1093,8 +1101,12 @@ func (r *Replica) handleRaftReady() error {
 
 	}
 	if hasEmptyEntry {
-		// TODO(bdarnell): repropose all pending commands.
+		log.Infof("TODO(bdarnell): repropose all pending commands")
 	}
+	// TODO(bdarnell): is this right?
+	r.Lock()
+	r.raftGroup.Advance(rd)
+	r.Unlock()
 	return nil
 }
 

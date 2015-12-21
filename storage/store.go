@@ -1546,7 +1546,9 @@ func (s *Store) processRaft() {
 				if !ok {
 					continue
 				}
-				r.handleRaftReady()
+				if err := r.handleRaftReady(); err != nil {
+					panic(err) // TODO(bdarnell)
+				}
 			}
 			if len(s.pendingRaftGroups) > 0 {
 				s.pendingRaftGroups = map[roachpb.RangeID]struct{}{}
@@ -1700,8 +1702,9 @@ func raftEntryFormatter(data []byte) string {
 	if len(data) == 0 {
 		return "[empty]"
 	}
+	_, encodedCmd := decodeRaftCommand(data)
 	var cmd roachpb.RaftCommand
-	if err := proto.Unmarshal(data, &cmd); err != nil {
+	if err := proto.Unmarshal(encodedCmd, &cmd); err != nil {
 		return fmt.Sprintf("[error parsing entry: %s]", err)
 	}
 	s := cmd.String()
