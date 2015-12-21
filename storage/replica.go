@@ -45,6 +45,7 @@ import (
 	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/cockroachdb/cockroach/util/tracer"
 	"github.com/coreos/etcd/raft"
+	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/gogo/protobuf/proto"
 )
 
@@ -416,23 +417,18 @@ func (r *Replica) requestLeaderLease(timestamp roachpb.Timestamp) error {
 	// checks from normal request machinery, (e.g. the command queue).
 	// Note that the command itself isn't traced, but usually the caller
 	// waiting for the result has an active Trace.
-	errChan, pendingCmd := r.proposeRaftCommand(ctx, ba)
-
-	select {
-	case err := <-errChan:
-		if err != nil {
-			return err
-		}
-	case <-ctx.Done():
-		// If the context expired we don't know who got the lease but we
-		// know we didn't.
-		return r.newNotLeaderError(nil, r.store.StoreID())
+	pendingCmd, err := r.proposeRaftCommand(ctx, ba)
+	if err != nil {
+		return err
 	}
+
 	// Next if the command was committed, wait for the range to apply it.
 	select {
 	case c := <-pendingCmd.done:
 		return c.Err
 	case <-ctx.Done():
+		// If the context expired we don't know who got the lease but we
+		// know we didn't.
 		return r.newNotLeaderError(nil, r.store.StoreID())
 	}
 }
@@ -930,15 +926,13 @@ func (r *Replica) addWriteCmd(ctx context.Context, ba roachpb.BatchRequest, wg *
 
 	defer trace.Epoch("raft")()
 
-	errChan, pendingCmd := r.proposeRaftCommand(ctx, ba)
+	pendingCmd, err := r.proposeRaftCommand(ctx, ba)
 
 	signal()
 
-	// First wait for raft to commit or abort the command.
 	var br *roachpb.BatchResponse
-	var err error
-	if err = <-errChan; err == nil {
-		// Next if the command was committed, wait for the range to apply it.
+	if err == nil {
+		// If the command was accepted by raft, wait for the range to apply it.
 		respWithErr := <-pendingCmd.done
 		br, err = respWithErr.Reply, respWithErr.Err
 	}
@@ -951,7 +945,7 @@ func (r *Replica) addWriteCmd(ctx context.Context, ba roachpb.BatchRequest, wg *
 // initializes a client command ID if one hasn't been. It then
 // proposes the command to Raft and returns the error channel and
 // pending command struct for receiving.
-func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchRequest) (<-chan error, *pendingCmd) {
+func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchRequest) (*pendingCmd, error) {
 	pendingCmd := &pendingCmd{
 		ctx:  ctx,
 		done: make(chan roachpb.ResponseWithError, 1),
@@ -959,9 +953,7 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchReques
 	desc := r.Desc()
 	_, replica := desc.FindReplica(r.store.StoreID())
 	if replica == nil {
-		errChan := make(chan error, 1)
-		errChan <- roachpb.NewRangeNotFoundError(desc.RangeID)
-		return errChan, pendingCmd
+		return nil, roachpb.NewRangeNotFoundError(desc.RangeID)
 	}
 	raftCmd := roachpb.RaftCommand{
 		RangeID:       desc.RangeID,
@@ -977,16 +969,46 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchReques
 
 	r.Lock()
 	r.pendingCmds[idKey] = pendingCmd
-	r.Unlock()
+	defer r.Unlock()
 
-	var errChan <-chan error
 	if r.proposeRaftCommandFn != nil {
-		errChan = r.proposeRaftCommandFn(idKey, raftCmd)
-	} else {
-		errChan = r.store.ProposeRaftCommand(idKey, raftCmd)
+		errChan := r.proposeRaftCommandFn(idKey, raftCmd)
+		return pendingCmd, <-errChan
 	}
 
-	return errChan, pendingCmd
+	data, err := proto.Marshal(&raftCmd)
+	if err != nil {
+		return nil, err
+	}
+	for _, union := range raftCmd.Cmd.Requests {
+		args := union.GetInner()
+		etr, ok := args.(*roachpb.EndTransactionRequest)
+		if ok {
+			if crt := etr.InternalCommitTrigger.GetChangeReplicasTrigger(); crt != nil {
+				// EndTransactionRequest with a ChangeReplicasTrigger is special because raft
+				// needs to understand it; it cannot simply be an opaque command.
+				log.Infof("raft: %s %v for range %d", crt.ChangeType, crt.Replica, raftCmd.RangeID)
+
+				ctx := multiraft.ConfChangeContext{
+					CommandID: string(idKey),
+					Payload:   data,
+					Replica:   crt.Replica,
+				}
+				encodedCtx, err := ctx.Marshal()
+				if err != nil {
+					return nil, err
+				}
+
+				return pendingCmd, r.raftGroup.ProposeConfChange(
+					raftpb.ConfChange{
+						Type:    changeTypeInternalToRaft[crt.ChangeType],
+						NodeID:  uint64(crt.Replica.ReplicaID),
+						Context: encodedCtx,
+					})
+			}
+		}
+	}
+	return pendingCmd, r.raftGroup.Propose(encodeRaftCommand(string(idKey), data))
 }
 
 // processRaftCommand processes a raft command by unpacking the command

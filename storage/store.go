@@ -257,7 +257,6 @@ type Store struct {
 	scanner           *replicaScanner // Replica scanner
 	feed              StoreEventFeed  // Event Feed
 	removeReplicaChan chan removeReplicaOp
-	proposeChan       chan proposeOp
 	multiraft         *multiraft.MultiRaft
 	started           int32
 	stopper           *stop.Stopper
@@ -380,7 +379,6 @@ func NewStore(ctx StoreContext, eng engine.Engine, nodeDesc *roachpb.NodeDescrip
 		uninitReplicas:    map[roachpb.RangeID]*Replica{},
 		nodeDesc:          nodeDesc,
 		removeReplicaChan: make(chan removeReplicaOp),
-		proposeChan:       make(chan proposeOp),
 		replicaDescCache: cache.NewUnorderedCache(cache.Config{
 			Policy: cache.CacheLRU,
 			ShouldEvict: func(size int, key, value interface{}) bool {
@@ -1520,59 +1518,6 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *roachpb.Writ
 	return resolveIntents, wiErr
 }
 
-type proposeOp struct {
-	idKey cmdIDKey
-	cmd   roachpb.RaftCommand
-	ch    chan<- <-chan error
-}
-
-// ProposeRaftCommand submits a command to raft. The command is processed
-// asynchronously and an error or nil will be written to the returned
-// channel when it is committed or aborted (but note that committed does
-// mean that it has been applied to the range yet).
-func (s *Store) ProposeRaftCommand(idKey cmdIDKey, cmd roachpb.RaftCommand) <-chan error {
-	ch := make(chan (<-chan error))
-	s.proposeChan <- proposeOp{idKey, cmd, ch}
-	return <-ch
-}
-
-// proposeRaftCommandImpl runs on the processRaft goroutine.
-func (s *Store) proposeRaftCommandImpl(idKey cmdIDKey, cmd roachpb.RaftCommand) <-chan error {
-	// If the range has been removed since the proposal started, drop it now.
-	s.mu.RLock()
-	r, ok := s.replicas[cmd.RangeID]
-	s.mu.RUnlock()
-	if !ok {
-		ch := make(chan error, 1)
-		ch <- roachpb.NewRangeNotFoundError(cmd.RangeID)
-		return ch
-	}
-
-	// TODO(bdarnell): when group creation is lazy again, do it here.
-
-	data, err := proto.Marshal(&cmd)
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, union := range cmd.Cmd.Requests {
-		args := union.GetInner()
-		etr, ok := args.(*roachpb.EndTransactionRequest)
-		if ok {
-			if crt := etr.InternalCommitTrigger.GetChangeReplicasTrigger(); crt != nil {
-				// EndTransactionRequest with a ChangeReplicasTrigger is special because raft
-				// needs to understand it; it cannot simply be an opaque command.
-				log.Infof("raft: %s %v for range %d", crt.ChangeType, crt.Replica, cmd.RangeID)
-				return s.multiraft.ChangeGroupMembership(cmd.RangeID, string(idKey),
-					changeTypeInternalToRaft[crt.ChangeType],
-					crt.Replica,
-					data)
-			}
-		}
-	}
-	return r.raftGroup.Propose(en
-	return s.multiraft.SubmitCommand(cmd.RangeID, string(idKey), data)
-}
-
 // processRaft processes write commands that have been committed
 // by the raft consensus algorithm, dispatching them to the
 // appropriate range. This method starts a goroutine to process Raft
@@ -1641,9 +1586,6 @@ func (s *Store) processRaft() {
 
 			case op := <-s.removeReplicaChan:
 				op.ch <- s.removeReplicaImpl(op.rep, op.origDesc)
-
-			case op := <-s.proposeChan:
-				op.ch <- s.proposeRaftCommandImpl(op.idKey, op.cmd)
 
 			case <-s.stopper.ShouldStop():
 				return
