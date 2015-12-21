@@ -163,7 +163,7 @@ type Replica struct {
 	sequence     *SequenceCache // Provides txn replay protection
 
 	// proposeRaftCommandFn can be set to mock out the propose operation.
-	proposeRaftCommandFn func(cmdIDKey, roachpb.RaftCommand) <-chan error
+	proposeRaftCommandFn func(cmdIDKey, roachpb.RaftCommand) error
 
 	// Held in read mode during read-only commands. Held in exclusive mode to
 	// prevent read-only commands from executing. Acquired before the embedded
@@ -972,8 +972,8 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchReques
 	defer r.Unlock()
 
 	if r.proposeRaftCommandFn != nil {
-		errChan := r.proposeRaftCommandFn(idKey, raftCmd)
-		return pendingCmd, <-errChan
+		err := r.proposeRaftCommandFn(idKey, raftCmd)
+		return pendingCmd, err
 	}
 
 	data, err := proto.Marshal(&raftCmd)

@@ -284,9 +284,8 @@ func TestRangeContains(t *testing.T) {
 func setLeaderLease(t *testing.T, r *Replica, l *roachpb.Lease) {
 	ba := roachpb.BatchRequest{}
 	ba.Add(&roachpb.LeaderLeaseRequest{Lease: *l})
-	errChan, pendingCmd := r.proposeRaftCommand(r.context(), ba)
-	var err error
-	if err = <-errChan; err == nil {
+	pendingCmd, err := r.proposeRaftCommand(r.context(), ba)
+	if err == nil {
 		// Next if the command was committed, wait for the range to apply it.
 		err = (<-pendingCmd.done).Err
 	}
@@ -492,12 +491,10 @@ func TestRangeLeaderLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rng.proposeRaftCommandFn = func(id cmdIDKey, cmd roachpb.RaftCommand) <-chan error {
-		errChan := make(chan error, 1)
-		errChan <- &roachpb.LeaseRejectedError{
+	rng.proposeRaftCommandFn = func(id cmdIDKey, cmd roachpb.RaftCommand) error {
+		return &roachpb.LeaseRejectedError{
 			Message: "replica not found",
 		}
-		return errChan
 	}
 
 	if _, ok := rng.redirectOnOrAcquireLeaderLease(nil, tc.clock.Now()).(*roachpb.NotLeaderError); !ok {
@@ -732,9 +729,8 @@ func TestRangeLeaderLeaseRejectUnknownRaftNodeID(t *testing.T) {
 	}
 	ba := roachpb.BatchRequest{}
 	ba.Add(&roachpb.LeaderLeaseRequest{Lease: *lease})
-	errChan, pendingCmd := tc.rng.proposeRaftCommand(tc.rng.context(), ba)
-	var err error
-	if err = <-errChan; err == nil {
+	pendingCmd, err := tc.rng.proposeRaftCommand(tc.rng.context(), ba)
+	if err == nil {
 		// Next if the command was committed, wait for the range to apply it.
 		err = (<-pendingCmd.done).Err
 	}
@@ -3363,19 +3359,6 @@ func BenchmarkWriteCmdWithEventsAndConsumer(b *testing.B) {
 	benchmarkEvents(b, true, true)
 }
 
-type mockRangeManager struct {
-	*Store
-	mockProposeRaftCommand func(cmdIDKey, roachpb.RaftCommand) <-chan error
-}
-
-// ProposeRaftCommand mocks out the corresponding method on the Store.
-func (mrm *mockRangeManager) ProposeRaftCommand(idKey cmdIDKey, cmd roachpb.RaftCommand) <-chan error {
-	if mrm.mockProposeRaftCommand == nil {
-		return mrm.Store.ProposeRaftCommand(idKey, cmd)
-	}
-	return mrm.mockProposeRaftCommand(idKey, cmd)
-}
-
 // TestRequestLeaderEncounterGroupDeleteError verifies that a request leader proposal which fails with
 // multiraft.ErrGroupDeleted is converted to a RangeNotFoundError in the Store.
 func TestRequestLeaderEncounterGroupDeleteError(t *testing.T) {
@@ -3387,10 +3370,8 @@ func TestRequestLeaderEncounterGroupDeleteError(t *testing.T) {
 	defer tc.Stop()
 
 	// Mock proposeRaftCommand to return an ErrGroupDeleted error.
-	proposeRaftCommandFn := func(cmdIDKey, roachpb.RaftCommand) <-chan error {
-		ch := make(chan error, 1)
-		ch <- multiraft.ErrGroupDeleted
-		return ch
+	proposeRaftCommandFn := func(cmdIDKey, roachpb.RaftCommand) error {
+		return multiraft.ErrGroupDeleted
 	}
 	rng, err := NewReplica(testRangeDescriptor(), tc.store)
 	rng.proposeRaftCommandFn = proposeRaftCommandFn
