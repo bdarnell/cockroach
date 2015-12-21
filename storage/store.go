@@ -257,6 +257,7 @@ type Store struct {
 	scanner           *replicaScanner // Replica scanner
 	feed              StoreEventFeed  // Event Feed
 	removeReplicaChan chan removeReplicaOp
+	wakeRaftLoop      chan struct{}
 	multiraft         *multiraft.MultiRaft
 	started           int32
 	stopper           *stop.Stopper
@@ -273,7 +274,8 @@ type Store struct {
 	replicasByKey  *btree.BTree                 // btree keyed by ranges end keys.
 	uninitReplicas map[roachpb.RangeID]*Replica // Map of uninitialized replicas by Range ID
 
-	replicaDescCache *cache.UnorderedCache
+	replicaDescCache  *cache.UnorderedCache
+	pendingRaftGroups map[roachpb.RangeID]struct{}
 }
 
 var _ client.Sender = &Store{}
@@ -385,6 +387,8 @@ func NewStore(ctx StoreContext, eng engine.Engine, nodeDesc *roachpb.NodeDescrip
 				return size > maxReplicaDescCacheSize
 			},
 		}),
+		wakeRaftLoop:      make(chan struct{}, 1),
+		pendingRaftGroups: map[roachpb.RangeID]struct{}{},
 	}
 
 	// Add range scanner and configure with queues.
@@ -1518,6 +1522,16 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *roachpb.Writ
 	return resolveIntents, wiErr
 }
 
+// checkRaftGroup registers the given range ID to be checked for raft
+// updates when the processRaft goroutine is idle.
+// TODO(bdarnell): reconsider the goroutine relationships here.
+func (s *Store) checkRaftGroup(rangeID roachpb.RangeID) {
+	s.mu.Lock()
+	s.pendingRaftGroups[rangeID] = struct{}{}
+	s.mu.Unlock()
+	s.wakeRaftLoop <- struct{}{}
+}
+
 // processRaft processes write commands that have been committed
 // by the raft consensus algorithm, dispatching them to the
 // appropriate range. This method starts a goroutine to process Raft
@@ -1525,64 +1539,22 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *roachpb.Writ
 func (s *Store) processRaft() {
 	s.stopper.RunWorker(func() {
 		for {
-			select {
-			case events := <-s.multiraft.Events:
-				for _, e := range events {
-					var cmd roachpb.RaftCommand
-					var groupID roachpb.RangeID
-					var commandID string
-					var index uint64
-					var callback func(error)
-
-					switch e := e.(type) {
-					case *multiraft.EventCommandCommitted:
-						groupID = e.GroupID
-						commandID = e.CommandID
-						index = e.Index
-						err := proto.Unmarshal(e.Command, &cmd)
-						if err != nil {
-							log.Fatal(err)
-						}
-						if log.V(6) {
-							log.Infof("store %s: new committed command at index %d", s, e.Index)
-						}
-
-					case *multiraft.EventMembershipChangeCommitted:
-						groupID = e.GroupID
-						commandID = e.CommandID
-						index = e.Index
-						callback = e.Callback
-						err := proto.Unmarshal(e.Payload, &cmd)
-						if err != nil {
-							log.Fatal(err)
-						}
-						if log.V(6) {
-							log.Infof("store %s: new committed membership change at index %d", s, e.Index)
-						}
-
-					default:
-						continue
-					}
-
-					if groupID != cmd.RangeID {
-						log.Fatalf("e.GroupID (%d) should == cmd.RangeID (%d)", groupID, cmd.RangeID)
-					}
-
-					s.mu.RLock()
-					r, ok := s.replicas[groupID]
-					s.mu.RUnlock()
-					var err error
-					if !ok {
-						err = util.Errorf("got committed raft command for %d but have no range with that ID: %+v",
-							groupID, cmd)
-						log.Error(err)
-					} else {
-						err = r.processRaftCommand(cmdIDKey(commandID), index, cmd)
-					}
-					if callback != nil {
-						callback(err)
-					}
+			// TODO(bdarnell): this lock is too broad.
+			s.mu.RLock()
+			for rangeID := range s.pendingRaftGroups {
+				r, ok := s.replicas[rangeID]
+				if !ok {
+					continue
 				}
+				r.handleRaftReady()
+			}
+			if len(s.pendingRaftGroups) > 0 {
+				s.pendingRaftGroups = map[roachpb.RangeID]struct{}{}
+			}
+			s.mu.RUnlock()
+
+			select {
+			case <-s.wakeRaftLoop:
 
 			case op := <-s.removeReplicaChan:
 				op.ch <- s.removeReplicaImpl(op.rep, op.origDesc)

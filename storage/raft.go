@@ -20,6 +20,7 @@ package storage
 import (
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/coreos/etcd/raft"
 )
@@ -119,4 +120,28 @@ func (r *raftLogger) Panicf(format string, v ...interface{}) {
 	s := r.prependContext(format, v)
 	log.ErrorDepth(1, s)
 	panic(s)
+}
+
+func logRaftReady(storeID roachpb.StoreID, groupID roachpb.RangeID, ready raft.Ready) {
+	if log.V(5) {
+		log.Infof("store %s: group %s raft ready", storeID, groupID)
+		if ready.SoftState != nil {
+			log.Infof("SoftState updated: %+v", *ready.SoftState)
+		}
+		if !raft.IsEmptyHardState(ready.HardState) {
+			log.Infof("HardState updated: %+v", ready.HardState)
+		}
+		for i, e := range ready.Entries {
+			log.Infof("New Entry[%d]: %.200s", i, raft.DescribeEntry(e, raftEntryFormatter))
+		}
+		for i, e := range ready.CommittedEntries {
+			log.Infof("Committed Entry[%d]: %.200s", i, raft.DescribeEntry(e, raftEntryFormatter))
+		}
+		if !raft.IsEmptySnap(ready.Snapshot) {
+			log.Infof("Snapshot updated: %.200s", ready.Snapshot.String())
+		}
+		for i, m := range ready.Messages {
+			log.Infof("Outgoing Message[%d]: %.200s", i, raft.DescribeMessage(m, raftEntryFormatter))
+		}
+	}
 }

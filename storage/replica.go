@@ -1011,6 +1011,93 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchReques
 	return pendingCmd, r.raftGroup.Propose(encodeRaftCommand(string(idKey), data))
 }
 
+func (r *Replica) handleRaftReady() error {
+	r.Lock()
+	if !r.raftGroup.HasReady() {
+		return nil
+	}
+	rd := r.raftGroup.Ready()
+	r.Unlock()
+	logRaftReady(r.store.StoreID(), r.Desc().RangeID, rd)
+
+	if !raft.IsEmptySnap(rd.Snapshot) {
+		if err := r.ApplySnapshot(rd.Snapshot); err != nil {
+			return err
+		}
+		// TODO(bdarnell): update coalesced heartbeat mapping with snapshot info.
+	}
+	if len(rd.Entries) > 0 {
+		if err := r.Append(rd.Entries); err != nil {
+			return err
+		}
+	}
+	if !raft.IsEmptyHardState(rd.HardState) {
+		if err := r.SetHardState(rd.HardState); err != nil {
+			return err
+		}
+	}
+
+	// TODO(bdarnell): maybeSendLeaderEvent
+	// TODO(bdarnell): send outgoing messages
+
+	// Process committed entries. etcd raft occasionally adds a nil
+	// entry (our own commands are never empty). This happens in two
+	// situations: When a new leader is elected, and when a config
+	// change is dropped due to the "one at a time" rule. In both
+	// cases we may need to resubmit our pending proposals (In the
+	// former case we resubmit everything because we proposed them to
+	// a former leader that is no longer able to commit them. In the
+	// latter case we only need to resubmit pending config changes,
+	// but it's hard to distinguish so we resubmit everything
+	// anyway). We delay resubmission until after we have processed
+	// the entire batch of entries.
+	hasEmptyEntry := false
+	for _, e := range rd.CommittedEntries {
+		switch e.Type {
+		case raftpb.EntryNormal:
+			if len(e.Data) == 0 {
+				hasEmptyEntry = true
+				continue
+			}
+			commandID, encodedCommand := decodeRaftCommand(e.Data)
+			var command roachpb.RaftCommand
+			if err := command.Unmarshal(encodedCommand); err != nil {
+				return err
+			}
+
+			if err := r.processRaftCommand(cmdIDKey(commandID), e.Index, command); err != nil {
+				return err
+			}
+
+		case raftpb.EntryConfChange:
+			var cc raftpb.ConfChange
+			if err := cc.Unmarshal(e.Data); err != nil {
+				return err
+			}
+			ctx := multiraft.ConfChangeContext{}
+			if err := ctx.Unmarshal(cc.Context); err != nil {
+				return err
+			}
+			var command roachpb.RaftCommand
+			if err := command.Unmarshal(ctx.Payload); err != nil {
+				return err
+			}
+			// TODO: CacheReplicaDescriptor(groupID, ctx.Replica)
+			if err := r.processRaftCommand(cmdIDKey(ctx.CommandID), e.Index, command); err != nil {
+				return err
+			}
+
+			// TODO: update coalesced heartbeat mapping
+			r.raftGroup.ApplyConfChange(cc)
+		}
+
+	}
+	if hasEmptyEntry {
+		// TODO(bdarnell): repropose all pending commands.
+	}
+	return nil
+}
+
 // processRaftCommand processes a raft command by unpacking the command
 // struct to get args and reply and then applying the command to the
 // state machine via applyRaftCommand(). The error result is sent on
