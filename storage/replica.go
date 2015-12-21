@@ -135,8 +135,10 @@ func usesTimestampCache(r roachpb.Request) bool {
 // committed to the Raft log, the command is executed and the result returned
 // via the done channel.
 type pendingCmd struct {
-	ctx  context.Context
-	done chan roachpb.ResponseWithError // Used to signal waiting RPC handler
+	ctx     context.Context
+	idKey   cmdIDKey
+	raftCmd roachpb.RaftCommand
+	done    chan roachpb.ResponseWithError // Used to signal waiting RPC handler
 }
 
 type cmdIDKey string
@@ -953,61 +955,64 @@ func (r *Replica) addWriteCmd(ctx context.Context, ba roachpb.BatchRequest, wg *
 // proposes the command to Raft and returns the error channel and
 // pending command struct for receiving.
 func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchRequest) (*pendingCmd, error) {
-	pendingCmd := &pendingCmd{
-		ctx:  ctx,
-		done: make(chan roachpb.ResponseWithError, 1),
-	}
 	desc := r.Desc()
 	_, replica := desc.FindReplica(r.store.StoreID())
 	if replica == nil {
 		return nil, roachpb.NewRangeNotFoundError(desc.RangeID)
 	}
-	raftCmd := roachpb.RaftCommand{
-		RangeID:       desc.RangeID,
-		OriginReplica: *replica,
-		Cmd:           ba,
+	idKeyBuf := make([]byte, 0, multiraft.CommandIDLen)
+	idKeyBuf = encoding.EncodeUint64(idKeyBuf, uint64(rand.Int63()))[:multiraft.CommandIDLen]
+	idKey := cmdIDKey(idKeyBuf)
+	pendingCmd := &pendingCmd{
+		ctx:   ctx,
+		done:  make(chan roachpb.ResponseWithError, 1),
+		idKey: idKey,
+		raftCmd: roachpb.RaftCommand{
+			RangeID:       desc.RangeID,
+			OriginReplica: *replica,
+			Cmd:           ba,
+		},
 	}
-
-	buf := make([]byte, 0, multiraft.CommandIDLen)
-	{
-		buf = encoding.EncodeUint64(buf, uint64(rand.Int63()))[:multiraft.CommandIDLen]
-	}
-	idKey := cmdIDKey(buf)
 
 	r.Lock()
 	r.pendingCmds[idKey] = pendingCmd
 	defer r.Unlock()
 
+	return pendingCmd, r.proposePendingCmdLocked(pendingCmd)
+}
+
+func (r *Replica) proposePendingCmdLocked(p *pendingCmd) error {
+	desc := r.Desc()
 	if r.proposeRaftCommandFn != nil {
-		err := r.proposeRaftCommandFn(idKey, raftCmd)
-		return pendingCmd, err
+		err := r.proposeRaftCommandFn(p.idKey, p.raftCmd)
+		return err
 	}
 
-	data, err := proto.Marshal(&raftCmd)
+	data, err := proto.Marshal(&p.raftCmd)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer r.store.checkRaftGroup(desc.RangeID)
-	for _, union := range raftCmd.Cmd.Requests {
+	for _, union := range p.raftCmd.Cmd.Requests {
 		args := union.GetInner()
 		etr, ok := args.(*roachpb.EndTransactionRequest)
 		if ok {
 			if crt := etr.InternalCommitTrigger.GetChangeReplicasTrigger(); crt != nil {
 				// EndTransactionRequest with a ChangeReplicasTrigger is special because raft
 				// needs to understand it; it cannot simply be an opaque command.
-				log.Infof("raft: %s %v for range %d", crt.ChangeType, crt.Replica, raftCmd.RangeID)
+				log.Infof("raft: %s %v for range %d", crt.ChangeType, crt.Replica, p.raftCmd.RangeID)
 
 				ctx := multiraft.ConfChangeContext{
-					CommandID: string(idKey),
+					CommandID: string(p.idKey),
 					Payload:   data,
 					Replica:   crt.Replica,
 				}
 				encodedCtx, err := ctx.Marshal()
 				if err != nil {
-					return nil, err
+					return err
 				}
 
-				return pendingCmd, r.raftGroup.ProposeConfChange(
+				return r.raftGroup.ProposeConfChange(
 					raftpb.ConfChange{
 						Type:    changeTypeInternalToRaft[crt.ChangeType],
 						NodeID:  uint64(crt.Replica.ReplicaID),
@@ -1016,12 +1021,13 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchReques
 			}
 		}
 	}
-	return pendingCmd, r.raftGroup.Propose(encodeRaftCommand(string(idKey), data))
+	return r.raftGroup.Propose(encodeRaftCommand(string(p.idKey), data))
 }
 
 func (r *Replica) handleRaftReady() error {
 	r.Lock()
 	if !r.raftGroup.HasReady() {
+		r.Unlock()
 		return nil
 	}
 	rd := r.raftGroup.Ready()
@@ -1074,7 +1080,7 @@ func (r *Replica) handleRaftReady() error {
 			}
 
 			if err := r.processRaftCommand(cmdIDKey(commandID), e.Index, command); err != nil {
-				return err
+				log.Infof("TODO(bdarnell): error handling for applied commands")
 			}
 
 		case raftpb.EntryConfChange:
@@ -1092,7 +1098,7 @@ func (r *Replica) handleRaftReady() error {
 			}
 			// TODO: CacheReplicaDescriptor(groupID, ctx.Replica)
 			if err := r.processRaftCommand(cmdIDKey(ctx.CommandID), e.Index, command); err != nil {
-				return err
+				log.Infof("TODO(bdarnell): error handling for applied commands")
 			}
 
 			// TODO: update coalesced heartbeat mapping
@@ -1101,7 +1107,15 @@ func (r *Replica) handleRaftReady() error {
 
 	}
 	if hasEmptyEntry {
-		log.Infof("TODO(bdarnell): repropose all pending commands")
+		r.Lock()
+		if len(r.pendingCmds) > 0 {
+			for _, p := range r.pendingCmds {
+				if err := r.proposePendingCmdLocked(p); err != nil {
+					return err
+				}
+			}
+		}
+		r.Unlock()
 	}
 	// TODO(bdarnell): is this right?
 	r.Lock()
