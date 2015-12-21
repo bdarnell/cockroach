@@ -1031,7 +1031,8 @@ func (r *Replica) handleRaftReady() error {
 	}
 	rd := r.raftGroup.Ready()
 	r.Unlock()
-	logRaftReady(r.store.StoreID(), r.Desc().RangeID, rd)
+	desc := r.Desc()
+	logRaftReady(r.store.StoreID(), desc.RangeID, rd)
 
 	if !raft.IsEmptySnap(rd.Snapshot) {
 		if err := r.ApplySnapshot(rd.Snapshot); err != nil {
@@ -1050,8 +1051,9 @@ func (r *Replica) handleRaftReady() error {
 		}
 	}
 
-	// TODO(bdarnell): maybeSendLeaderEvent
-	// TODO(bdarnell): send outgoing messages
+	for _, msg := range rd.Messages {
+		r.sendRaftMessage(msg)
+	}
 
 	// Process committed entries. etcd raft occasionally adds a nil
 	// entry (our own commands are never empty). This happens in two
@@ -1095,7 +1097,7 @@ func (r *Replica) handleRaftReady() error {
 			if err := command.Unmarshal(ctx.Payload); err != nil {
 				return err
 			}
-			// TODO: CacheReplicaDescriptor(groupID, ctx.Replica)
+			r.store.cacheReplicaDescriptor(desc.RangeID, ctx.Replica)
 			if err := r.processRaftCommand(cmdIDKey(ctx.CommandID), e.Index, command); err != nil {
 				log.Infof("TODO(bdarnell): error handling for applied commands")
 			}
@@ -1121,6 +1123,40 @@ func (r *Replica) handleRaftReady() error {
 	r.raftGroup.Advance(rd)
 	r.Unlock()
 	return nil
+}
+
+func (r *Replica) sendRaftMessage(msg raftpb.Message) {
+	r.Lock()
+	defer r.Unlock()
+	groupID := r.Desc().RangeID
+	toReplica, err := r.store.ReplicaDescriptor(groupID, roachpb.ReplicaID(msg.To))
+	if err != nil {
+		log.Warningf("failed to lookup recipient replica %d in group %s: %s", msg.To, groupID, err)
+		return
+	}
+	fromReplica, err := r.store.ReplicaDescriptor(groupID, roachpb.ReplicaID(msg.From))
+	if err != nil {
+		log.Warningf("failed to lookup sender replica %d in group %s: %s", msg.From, groupID, err)
+		return
+	}
+	err = r.store.ctx.Transport.Send(&multiraft.RaftMessageRequest{
+		GroupID:     groupID,
+		ToReplica:   toReplica,
+		FromReplica: fromReplica,
+		Message:     msg,
+	})
+	snapStatus := raft.SnapshotFinish
+	if err != nil {
+		log.Warningf("group %s on store %s failed to send message to %s: %s", groupID,
+			r.store.StoreID(), toReplica.StoreID, err)
+		r.raftGroup.ReportUnreachable(msg.To)
+		snapStatus = raft.SnapshotFailure
+	}
+	if msg.Type == raftpb.MsgSnap {
+		// TODO(bdarnell): add an ack for snapshots and don't report status until
+		// ack, error, or timeout.
+		r.raftGroup.ReportSnapshot(msg.To, snapStatus)
+	}
 }
 
 // processRaftCommand processes a raft command by unpacking the command
