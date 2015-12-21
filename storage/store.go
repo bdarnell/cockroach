@@ -1532,14 +1532,16 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *roachpb.Writ
 	return resolveIntents, wiErr
 }
 
-// checkRaftGroup registers the given range ID to be checked for raft
-// updates when the processRaft goroutine is idle.
+// checkRaftGroup asynchronously registers the given range ID to be
+// checked for raft updates when the processRaft goroutine is idle.
 // TODO(bdarnell): reconsider the goroutine relationships here.
 func (s *Store) checkRaftGroup(rangeID roachpb.RangeID) {
-	s.mu.Lock()
-	s.pendingRaftGroups[rangeID] = struct{}{}
-	s.mu.Unlock()
-	s.wakeRaftLoop <- struct{}{}
+	go func() {
+		s.mu.Lock()
+		s.pendingRaftGroups[rangeID] = struct{}{}
+		s.mu.Unlock()
+		s.wakeRaftLoop <- struct{}{}
+	}()
 }
 
 // processRaft processes write commands that have been committed
@@ -1717,7 +1719,7 @@ func raftEntryFormatter(data []byte) string {
 	if err := proto.Unmarshal(encodedCmd, &cmd); err != nil {
 		return fmt.Sprintf("[error parsing entry: %s]", err)
 	}
-	s := cmd.String()
+	s := cmd.Cmd.String()
 	maxLen := 300
 	if len(s) > maxLen {
 		s = s[:maxLen]
