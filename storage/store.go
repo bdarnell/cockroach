@@ -257,7 +257,6 @@ type Store struct {
 	feed              StoreEventFeed  // Event Feed
 	removeReplicaChan chan removeReplicaOp
 	wakeRaftLoop      chan struct{}
-	multiraft         *multiraft.MultiRaft
 	started           int32
 	stopper           *stop.Stopper
 	startedAt         int64
@@ -477,17 +476,6 @@ func (s *Store) Start(stopper *stop.Stopper) error {
 	start := keys.RangeDescriptorKey(roachpb.RKeyMin)
 	end := keys.RangeDescriptorKey(roachpb.RKeyMax)
 
-	if s.multiraft, err = multiraft.NewMultiRaft(s.Ident.NodeID, s.Ident.StoreID, &multiraft.Config{
-		Transport:              s.ctx.Transport,
-		Storage:                s,
-		TickInterval:           s.ctx.RaftTickInterval,
-		ElectionTimeoutTicks:   s.ctx.RaftElectionTimeoutTicks,
-		HeartbeatIntervalTicks: s.ctx.RaftHeartbeatIntervalTicks,
-		EntryFormatter:         raftEntryFormatter,
-	}, s.stopper); err != nil {
-		return err
-	}
-
 	// Iterate over all range descriptors, ignoring uncommitted versions
 	// (consistent=false). Uncommitted intents which have been abandoned
 	// due to a split crashing halfway will simply be resolved on the
@@ -533,7 +521,6 @@ func (s *Store) Start(stopper *stop.Stopper) error {
 	s.mu.Unlock()
 
 	// Start Raft processing goroutines.
-	s.multiraft.Start()
 	s.processRaft()
 
 	// Gossip is only ever nil while bootstrapping a cluster and
@@ -856,7 +843,12 @@ func (s *Store) hasOverlappingReplicaLocked(rngDesc *roachpb.RangeDescriptor) bo
 
 // RaftStatus returns the current raft status of the given range.
 func (s *Store) RaftStatus(rangeID roachpb.RangeID) *raft.Status {
-	return s.multiraft.Status(rangeID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if r, ok := s.replicas[rangeID]; ok {
+		return r.raftGroup.Status()
+	}
+	return nil
 }
 
 // BootstrapRange creates the first range in the cluster and manually
@@ -1026,9 +1018,10 @@ func (s *Store) SplitRange(origRng, newRng *Replica) error {
 		delete(s.uninitReplicas, newDesc.RangeID)
 		delete(s.replicas, newDesc.RangeID)
 		s.mu.Unlock()
-		if err := s.multiraft.RemoveGroup(newDesc.RangeID, 0); err != nil {
+		// TODO(bdarnell): multiraft.RemoveGroup
+		/*if err := s.multiraft.RemoveGroup(newDesc.RangeID, 0); err != nil {
 			return util.Errorf("couldn't remove uninitialized range's group %d: %s", newDesc.RangeID, err)
-		}
+		}*/
 		s.mu.Lock()
 	}
 	// The lock is held without interruption for the remainder of this method.
@@ -1176,21 +1169,22 @@ func (s *Store) removeReplicaImpl(rep *Replica, origDesc roachpb.RangeDescriptor
 		return util.Errorf("cannot remove replica %s; replica ID has changed (%s >= %s)",
 			rep, rd.ReplicaID, origDesc.NextReplicaID)
 	}
-	var replicaID roachpb.ReplicaID
+	/*var replicaID roachpb.ReplicaID
 	if rd != nil {
 		replicaID = rd.ReplicaID
 	} else {
 		replicaID = 0
-	}
+	}*/
 
 	// RemoveGroup needs to access the storage, which in turn needs the
 	// lock. Some care is needed to avoid deadlocks. We remove the group
 	// from multiraft outside the scope of s.mu; this is effectively
 	// synchronized by the fact that this method runs on the processRaft
 	// goroutine.
-	if err := s.multiraft.RemoveGroup(rangeID, replicaID); err != nil {
+	// TODO(bdarnell): multiraft.RemoveGroup
+	/*if err := s.multiraft.RemoveGroup(rangeID, replicaID); err != nil {
 		return err
-	}
+	}*/
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
