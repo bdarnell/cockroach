@@ -1551,6 +1551,7 @@ func (s *Store) checkRaftGroup(rangeID roachpb.RangeID) {
 // commands indefinitely or until the stopper signals.
 func (s *Store) processRaft() {
 	s.stopper.RunWorker(func() {
+		ticker := time.NewTicker(s.ctx.RaftTickInterval)
 		for {
 			// TODO(bdarnell): this lock is too broad.
 			s.mu.RLock()
@@ -1573,6 +1574,17 @@ func (s *Store) processRaft() {
 
 			case op := <-s.removeReplicaChan:
 				op.ch <- s.removeReplicaImpl(op.rep, op.origDesc)
+
+			case <-ticker.C:
+				// TODO(bdarnell): rework raft ticker.
+				s.mu.Lock()
+				for rangeID, r := range s.replicas {
+					r.Lock()
+					r.raftGroup.Tick()
+					r.Unlock()
+					s.pendingRaftGroups[rangeID] = struct{}{}
+				}
+				s.mu.Unlock()
 
 			case <-s.stopper.ShouldStop():
 				return
