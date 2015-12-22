@@ -1553,21 +1553,25 @@ func (s *Store) processRaft() {
 	s.stopper.RunWorker(func() {
 		ticker := time.NewTicker(s.ctx.RaftTickInterval)
 		for {
-			// TODO(bdarnell): this lock is too broad.
+			var replicas []*Replica
 			s.mu.RLock()
 			for rangeID := range s.pendingRaftGroups {
 				r, ok := s.replicas[rangeID]
 				if !ok {
 					continue
 				}
-				if err := r.handleRaftReady(); err != nil {
-					panic(err) // TODO(bdarnell)
-				}
+				replicas = append(replicas, r)
+
 			}
 			if len(s.pendingRaftGroups) > 0 {
 				s.pendingRaftGroups = map[roachpb.RangeID]struct{}{}
 			}
 			s.mu.RUnlock()
+			for _, r := range replicas {
+				if err := r.handleRaftReady(); err != nil {
+					panic(err) // TODO(bdarnell)
+				}
+			}
 
 			select {
 			case <-s.wakeRaftLoop:
