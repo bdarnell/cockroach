@@ -1081,7 +1081,7 @@ func (r *Replica) handleRaftReady() error {
 			}
 
 			if err := r.processRaftCommand(cmdIDKey(commandID), e.Index, command); err != nil {
-				log.Infof("TODO(bdarnell): error handling for applied commands")
+				log.Infof("TODO(bdarnell): error handling for applied commands: %s", err)
 			}
 
 		case raftpb.EntryConfChange:
@@ -1101,7 +1101,7 @@ func (r *Replica) handleRaftReady() error {
 			r.store.cacheReplicaDescriptor(desc.RangeID, ctx.Replica)
 			r.store.mu.Unlock()
 			if err := r.processRaftCommand(cmdIDKey(ctx.CommandID), e.Index, command); err != nil {
-				log.Infof("TODO(bdarnell): error handling for applied commands")
+				log.Infof("TODO(bdarnell): error handling for applied commands: %s", err)
 			}
 
 			// TODO: update coalesced heartbeat mapping

@@ -1588,6 +1588,7 @@ func (s *Store) checkRaftGroup(rangeID roachpb.RangeID) {
 // commands indefinitely or until the stopper signals.
 func (s *Store) processRaft() {
 	s.stopper.RunWorker(func() {
+		defer s.ctx.Transport.Stop(s.StoreID())
 		ticker := time.NewTicker(s.ctx.RaftTickInterval)
 		for {
 			var replicas []*Replica
