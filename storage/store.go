@@ -521,6 +521,9 @@ func (s *Store) Start(stopper *stop.Stopper) error {
 	s.mu.Unlock()
 
 	// Start Raft processing goroutines.
+	if err := s.ctx.Transport.Listen(s.StoreID(), s.handleRaftMessage); err != nil {
+		return err
+	}
 	s.processRaft()
 
 	// Gossip is only ever nil while bootstrapping a cluster and
@@ -1524,6 +1527,10 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *roachpb.Writ
 		resolveIntents = append(resolveIntents, intent)
 	}
 	return resolveIntents, wiErr
+}
+
+func (s *Store) handleRaftMessage(*multiraft.RaftMessageRequest) error {
+	panic("asdf")
 }
 
 // checkRaftGroup asynchronously registers the given range ID to be
