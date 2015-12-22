@@ -1098,13 +1098,17 @@ func (r *Replica) handleRaftReady() error {
 			if err := command.Unmarshal(ctx.Payload); err != nil {
 				return err
 			}
+			r.store.mu.Lock()
 			r.store.cacheReplicaDescriptor(desc.RangeID, ctx.Replica)
+			r.store.mu.Unlock()
 			if err := r.processRaftCommand(cmdIDKey(ctx.CommandID), e.Index, command); err != nil {
 				log.Infof("TODO(bdarnell): error handling for applied commands")
 			}
 
 			// TODO: update coalesced heartbeat mapping
+			r.Lock()
 			r.raftGroup.ApplyConfChange(cc)
+			r.Unlock()
 		}
 
 	}
@@ -1127,19 +1131,21 @@ func (r *Replica) handleRaftReady() error {
 }
 
 func (r *Replica) sendRaftMessage(msg raftpb.Message) {
-	r.Lock()
-	defer r.Unlock()
 	groupID := r.Desc().RangeID
+	r.store.mu.RLock()
 	toReplica, err := r.store.ReplicaDescriptor(groupID, roachpb.ReplicaID(msg.To))
 	if err != nil {
 		log.Warningf("failed to lookup recipient replica %d in group %s: %s", msg.To, groupID, err)
+		r.store.mu.RUnlock()
 		return
 	}
 	fromReplica, err := r.store.ReplicaDescriptor(groupID, roachpb.ReplicaID(msg.From))
 	if err != nil {
 		log.Warningf("failed to lookup sender replica %d in group %s: %s", msg.From, groupID, err)
+		r.store.mu.RUnlock()
 		return
 	}
+	r.store.mu.RUnlock()
 	err = r.store.ctx.Transport.Send(&multiraft.RaftMessageRequest{
 		GroupID:     groupID,
 		ToReplica:   toReplica,
@@ -1150,13 +1156,17 @@ func (r *Replica) sendRaftMessage(msg raftpb.Message) {
 	if err != nil {
 		log.Warningf("group %s on store %s failed to send message to %s: %s", groupID,
 			r.store.StoreID(), toReplica.StoreID, err)
+		r.Lock()
 		r.raftGroup.ReportUnreachable(msg.To)
+		r.Unlock()
 		snapStatus = raft.SnapshotFailure
 	}
 	if msg.Type == raftpb.MsgSnap {
 		// TODO(bdarnell): add an ack for snapshots and don't report status until
 		// ack, error, or timeout.
+		r.Lock()
 		r.raftGroup.ReportSnapshot(msg.To, snapStatus)
+		r.Unlock()
 	}
 }
 
