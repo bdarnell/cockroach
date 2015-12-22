@@ -86,7 +86,7 @@ const (
 // testContext{}. Any fields which are initialized to non-nil values
 // will be used as-is.
 type testContext struct {
-	transport     multiraft.Transport
+	transport     RaftTransport
 	store         *Store
 	rng           *Replica
 	rangeID       roachpb.RangeID
@@ -122,7 +122,7 @@ func (tc *testContext) Start(t testing.TB) {
 		tc.engine = engine.NewInMem(roachpb.Attributes{Attrs: []string{"dc1", "mem"}}, 1<<20, tc.stopper)
 	}
 	if tc.transport == nil {
-		tc.transport = multiraft.NewLocalRPCTransport(tc.stopper)
+		tc.transport = NewLocalRPCTransport(tc.stopper)
 	}
 	tc.stopper.AddCloser(tc.transport)
 
@@ -258,7 +258,7 @@ func TestRangeContains(t *testing.T) {
 	clock := hlc.NewClock(hlc.UnixNano)
 	ctx := TestStoreContext
 	ctx.Clock = clock
-	ctx.Transport = multiraft.NewLocalRPCTransport(stopper)
+	ctx.Transport = NewLocalRPCTransport(stopper)
 	defer ctx.Transport.Close()
 	store := NewStore(ctx, e, &roachpb.NodeDescriptor{NodeID: 1})
 	r, err := NewReplica(desc, store)

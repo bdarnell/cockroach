@@ -288,7 +288,7 @@ type StoreContext struct {
 	DB        *client.DB
 	Gossip    *gossip.Gossip
 	StorePool *StorePool
-	Transport multiraft.Transport
+	Transport RaftTransport
 
 	// RangeRetryOptions are the retry options when retryable errors are
 	// encountered sending commands to ranges.
