@@ -750,11 +750,11 @@ func (s *Store) DisableRaftLogQueue(disabled bool) {
 // Exposed only for testing.
 func (s *Store) ForceRaftLogScanAndProcess(t util.Tester) {
 	// Add each range to the queue.
-	s.mu.Lock()
+	s.mu.RLock()
 	for _, r := range s.replicas {
 		s.raftLogQueue.MaybeAdd(r, s.ctx.Clock.Now())
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	s.raftLogQueue.DrainQueue(s.ctx.Clock)
 }
