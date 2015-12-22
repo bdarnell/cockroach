@@ -38,12 +38,12 @@ const raftMessageName = "MultiRaft.RaftMessage"
 
 // The RaftTransport interface is supplied by the application to manage communication with
 // other nodes. It is responsible for mapping from IDs to some communication channel.
-// TODO(bdarnell): this interface can probably go away.
+// TODO(bdarnell): this interface needs to be updated and may just go away.
 type RaftTransport interface {
 	// Listen informs the RaftTransport of a local store's ID and callback interface.
 	// The RaftTransport should associate the given id with the server object so other RaftTransport's
 	// Connect methods can find it.
-	Listen(id roachpb.StoreID, server RaftServerInterface) error
+	Listen(id roachpb.StoreID, server func(*multiraft.RaftMessageRequest) error) error
 
 	// Stop undoes a previous Listen.
 	Stop(id roachpb.StoreID)
@@ -53,11 +53,6 @@ type RaftTransport interface {
 
 	// Close all associated connections.
 	Close()
-}
-
-// RaftServerInterface is the methods we expose for use by net/rpc.
-type RaftServerInterface interface {
-	RaftMessage(req *multiraft.RaftMessageRequest) (*multiraft.RaftMessageResponse, error)
 }
 
 type serverWithAddr struct {
@@ -79,7 +74,7 @@ type localRPCTransport struct {
 // can be an arbitrary string). Each instance binds to a different unused port on
 // localhost.
 // Because this is just for local testing, it doesn't use TLS.
-// TODO(bdarnell): get rid of this?
+// TODO(bdarnell): get rid of LocalRPCTransport?
 func NewLocalRPCTransport(stopper *stop.Stopper) RaftTransport {
 	return &localRPCTransport{
 		servers: make(map[roachpb.StoreID]serverWithAddr),
@@ -90,7 +85,7 @@ func NewLocalRPCTransport(stopper *stop.Stopper) RaftTransport {
 	}
 }
 
-func (lt *localRPCTransport) Listen(id roachpb.StoreID, server RaftServerInterface) error {
+func (lt *localRPCTransport) Listen(id roachpb.StoreID, server func(*multiraft.RaftMessageRequest) error) error {
 	ctx := crpc.Context{
 		Context: base.Context{
 			Insecure: true,
@@ -102,8 +97,8 @@ func (lt *localRPCTransport) Listen(id roachpb.StoreID, server RaftServerInterfa
 	err := rpcServer.RegisterAsync(raftMessageName, false, /*not public*/
 		func(argsI proto.Message, callback func(proto.Message, error)) {
 			args := argsI.(*multiraft.RaftMessageRequest)
-			resp, err := server.RaftMessage(args)
-			callback(resp, err)
+			err := server(args)
+			callback(&multiraft.RaftMessageResponse{}, err)
 		}, &multiraft.RaftMessageRequest{})
 	if err != nil {
 		return err
