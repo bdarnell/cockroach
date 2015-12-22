@@ -1529,8 +1529,45 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *roachpb.Writ
 	return resolveIntents, wiErr
 }
 
-func (s *Store) handleRaftMessage(*multiraft.RaftMessageRequest) error {
-	panic("asdf")
+func (s *Store) handleRaftMessage(req *multiraft.RaftMessageRequest) error {
+	switch req.Message.Type {
+	case raftpb.MsgSnap:
+		s.mu.Lock()
+		canApply := s.CanApplySnapshot(req.GroupID, req.Message.Snapshot)
+		s.mu.Unlock()
+		if !canApply {
+			// If the storage cannot accept the snapshot, drop it before
+			// passing it to RawNode.Step, since our error handling
+			// options past that point are limited.
+			return nil
+		}
+
+		// TODO(bdarnell): handle coalesced heartbeats
+	}
+
+	s.mu.Lock()
+	s.cacheReplicaDescriptor(req.GroupID, req.FromReplica)
+	s.cacheReplicaDescriptor(req.GroupID, req.ToReplica)
+	s.mu.Unlock()
+	// Lazily create the group.
+	// TODO(bdarnell): move body of GroupStorage here.
+	// TODO(bdarnell): handle replica ID updates.
+	s.mu.Lock()
+	gs, err := s.GroupStorage(req.GroupID, req.ToReplica.ReplicaID)
+	s.mu.Unlock()
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	r := gs.(*Replica)
+	r.Lock()
+	err = r.raftGroup.Step(req.Message)
+	r.Unlock()
+	if err != nil {
+		return err
+	}
+	s.checkRaftGroup(req.GroupID)
+	return nil
 }
 
 // checkRaftGroup asynchronously registers the given range ID to be

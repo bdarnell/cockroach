@@ -96,6 +96,12 @@ func (lt *localRPCTransport) Listen(id roachpb.StoreID, server func(*multiraft.R
 	rpcServer := crpc.NewServer(&ctx)
 	err := rpcServer.RegisterAsync(raftMessageName, false, /*not public*/
 		func(argsI proto.Message, callback func(proto.Message, error)) {
+			defer func() {
+				// TODO(bdarnell): the http/rpc code is swallowing panics somewhere.
+				if p := recover(); p != nil {
+					log.Fatalf("caught panic: %s", p)
+				}
+			}()
 			args := argsI.(*multiraft.RaftMessageRequest)
 			err := server(args)
 			callback(&multiraft.RaftMessageResponse{}, err)
