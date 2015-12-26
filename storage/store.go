@@ -61,6 +61,8 @@ const (
 	// message/snapshot descriptors (whose necessity is short-lived but
 	// cannot be recovered through other means if evicted)?
 	maxReplicaDescCacheSize = 1000
+
+	raftReqBufferSize = 100
 )
 
 var (
@@ -274,6 +276,7 @@ type Store struct {
 
 	replicaDescCache  *cache.UnorderedCache
 	pendingRaftGroups map[roachpb.RangeID]struct{}
+	raftRequestChan   chan *multiraft.RaftMessageRequest
 }
 
 var _ client.Sender = &Store{}
@@ -387,6 +390,7 @@ func NewStore(ctx StoreContext, eng engine.Engine, nodeDesc *roachpb.NodeDescrip
 		}),
 		wakeRaftLoop:      make(chan struct{}, 1),
 		pendingRaftGroups: map[roachpb.RangeID]struct{}{},
+		raftRequestChan:   make(chan *multiraft.RaftMessageRequest, raftReqBufferSize),
 	}
 
 	// Add range scanner and configure with queues.
@@ -1529,6 +1533,12 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *roachpb.Writ
 	return resolveIntents, wiErr
 }
 
+// TODO(bdarnell): is this buffering necessary? sufficient?
+func (s *Store) enqueueRaftMessage(req *multiraft.RaftMessageRequest) error {
+	s.raftRequestChan <- req
+	return nil
+}
+
 func (s *Store) handleRaftMessage(req *multiraft.RaftMessageRequest) error {
 	switch req.Message.Type {
 	case raftpb.MsgSnap:
@@ -1542,7 +1552,26 @@ func (s *Store) handleRaftMessage(req *multiraft.RaftMessageRequest) error {
 			return nil
 		}
 
-		// TODO(bdarnell): handle coalesced heartbeats
+	// TODO(bdarnell): handle coalesced heartbeats
+	case raftpb.MsgHeartbeat:
+		// A subset of coalesced heartbeats: drop heartbeats (but not
+		// other messages!) that come from a node that we don't believe to
+		// be a current member of the group.
+		s.mu.Lock()
+		r, ok := s.replicas[req.GroupID]
+		s.mu.Unlock()
+		if ok {
+			found := false
+			for _, rep := range r.Desc().Replicas {
+				if rep.ReplicaID == req.FromReplica.ReplicaID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil
+			}
+		}
 	}
 
 	s.mu.Lock()
@@ -1616,6 +1645,11 @@ func (s *Store) processRaft() {
 
 			case op := <-s.removeReplicaChan:
 				op.ch <- s.removeReplicaImpl(op.rep, op.origDesc)
+
+			case req := <-s.raftRequestChan:
+				if err := s.handleRaftMessage(req); err != nil {
+					log.Errorf("error handling raft message: %s", err)
+				}
 
 			case <-ticker.C:
 				// TODO(bdarnell): rework raft ticker.

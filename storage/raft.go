@@ -19,6 +19,7 @@ package storage
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/util/log"
@@ -122,8 +123,13 @@ func (r *raftLogger) Panicf(format string, v ...interface{}) {
 	panic(s)
 }
 
+var logRaftReadyMu sync.Mutex
+
 func logRaftReady(storeID roachpb.StoreID, groupID roachpb.RangeID, ready raft.Ready) {
 	if log.V(5) {
+		// Globally synchronize to avoid interleaving different sets of logs in tests.
+		logRaftReadyMu.Lock()
+		defer logRaftReadyMu.Unlock()
 		log.Infof("store %s: group %s raft ready", storeID, groupID)
 		if ready.SoftState != nil {
 			log.Infof("SoftState updated: %+v", *ready.SoftState)

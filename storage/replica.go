@@ -974,6 +974,9 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchReques
 	}
 
 	r.Lock()
+	if _, ok := r.pendingCmds[idKey]; ok {
+		log.Fatalf("pending command already exists for %s", idKey)
+	}
 	r.pendingCmds[idKey] = pendingCmd
 	defer r.Unlock()
 
@@ -999,7 +1002,7 @@ func (r *Replica) proposePendingCmdLocked(p *pendingCmd) error {
 			if crt := etr.InternalCommitTrigger.GetChangeReplicasTrigger(); crt != nil {
 				// EndTransactionRequest with a ChangeReplicasTrigger is special because raft
 				// needs to understand it; it cannot simply be an opaque command.
-				log.Infof("raft: %s %v for range %d", crt.ChangeType, crt.Replica, p.raftCmd.RangeID)
+				log.Infof("raft: proposing %s %v for range %d", crt.ChangeType, crt.Replica, p.raftCmd.RangeID)
 
 				ctx := multiraft.ConfChangeContext{
 					CommandID: string(p.idKey),
@@ -1100,20 +1103,27 @@ func (r *Replica) handleRaftReady() error {
 			r.store.mu.Lock()
 			r.store.cacheReplicaDescriptor(desc.RangeID, ctx.Replica)
 			r.store.mu.Unlock()
-			if err := r.processRaftCommand(cmdIDKey(ctx.CommandID), e.Index, command); err != nil {
+			if err := r.processRaftCommand(cmdIDKey(ctx.CommandID), e.Index, command); err == nil {
+				// TODO: update coalesced heartbeat mapping
+				r.Lock()
+				r.raftGroup.ApplyConfChange(cc)
+				r.Unlock()
+			} else {
 				log.Infof("TODO(bdarnell): error handling for applied commands: %s", err)
+				r.Lock()
+				r.raftGroup.ApplyConfChange(raftpb.ConfChange{})
+				r.Unlock()
 			}
 
-			// TODO: update coalesced heartbeat mapping
-			r.Lock()
-			r.raftGroup.ApplyConfChange(cc)
-			r.Unlock()
 		}
 
 	}
 	if hasEmptyEntry {
 		r.Lock()
 		if len(r.pendingCmds) > 0 {
+			if log.V(1) {
+				log.Infof("reproposing %d commands after empty entry", len(r.pendingCmds))
+			}
 			for _, p := range r.pendingCmds {
 				if err := r.proposePendingCmdLocked(p); err != nil {
 					return err
