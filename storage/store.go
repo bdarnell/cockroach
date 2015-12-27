@@ -1586,17 +1586,12 @@ func (s *Store) handleRaftMessage(req *RaftMessageRequest) error {
 	s.mu.Lock()
 	s.cacheReplicaDescriptor(req.GroupID, req.FromReplica)
 	s.cacheReplicaDescriptor(req.GroupID, req.ToReplica)
-	s.mu.Unlock()
 	// Lazily create the group.
-	// TODO(bdarnell): move body of GroupStorage here.
-	// TODO(bdarnell): handle replica ID updates.
-	s.mu.Lock()
-	gs, err := s.GroupStorage(req.GroupID, req.ToReplica.ReplicaID)
+	r, err := s.getOrCreateReplica(req.GroupID, req.ToReplica.ReplicaID)
 	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	r := gs
 	r.Lock()
 	err = r.raftGroup.Step(req.Message)
 	r.Unlock()
@@ -1680,10 +1675,10 @@ func (s *Store) processRaft() {
 	})
 }
 
-// GroupStorage implements the multiraft.Storage interface.
-// The caller must hold the store's lock.
-// TODO(bdarnell): rename/fold into handleRaftMessage.
-func (s *Store) GroupStorage(groupID roachpb.RangeID, replicaID roachpb.ReplicaID) (*Replica, error) {
+// getOrCreateReplica returns a replica for the given RangeID,
+// creating an uninitialized replica if necessary. The caller must
+// hold the store's lock.
+func (s *Store) getOrCreateReplica(groupID roachpb.RangeID, replicaID roachpb.ReplicaID) (*Replica, error) {
 	r, ok := s.replicas[groupID]
 	if !ok {
 		// Before creating the group, see if there is a tombstone which
