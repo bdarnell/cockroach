@@ -1552,7 +1552,7 @@ func (s *Store) handleRaftMessage(req *RaftMessageRequest) error {
 	switch req.Message.Type {
 	case raftpb.MsgSnap:
 		s.mu.Lock()
-		canApply := s.CanApplySnapshot(req.GroupID, req.Message.Snapshot)
+		canApply := s.canApplySnapshot(req.GroupID, req.Message.Snapshot)
 		s.mu.Unlock()
 		if !canApply {
 			// If the storage cannot accept the snapshot, drop it before
@@ -1720,9 +1720,9 @@ func (s *Store) getOrCreateReplica(groupID roachpb.RangeID, replicaID roachpb.Re
 	return r, nil
 }
 
-// ReplicaDescriptor returns the replica descriptor for the given
+// replicaDescriptor returns the replica descriptor for the given
 // range and replica, if known. The caller must hold the store's lock.
-func (s *Store) ReplicaDescriptor(groupID roachpb.RangeID, replicaID roachpb.ReplicaID) (roachpb.ReplicaDescriptor, error) {
+func (s *Store) replicaDescriptor(groupID roachpb.RangeID, replicaID roachpb.ReplicaID) (roachpb.ReplicaDescriptor, error) {
 	if rep, ok := s.replicaDescCache.Get(replicaDescCacheKey{groupID, replicaID}); ok {
 		return rep.(roachpb.ReplicaDescriptor), nil
 	}
@@ -1745,10 +1745,10 @@ func (s *Store) cacheReplicaDescriptor(groupID roachpb.RangeID, replica roachpb.
 	s.replicaDescCache.Add(replicaDescCacheKey{groupID, replica.ReplicaID}, replica)
 }
 
-// CanApplySnapshot returns true if the snapshot can be applied to
+// canApplySnapshot returns true if the snapshot can be applied to
 // this store's replica (i.e. it is not from an older incarnation of
 // the replica). The caller must hold the store's lock.
-func (s *Store) CanApplySnapshot(rangeID roachpb.RangeID, snap raftpb.Snapshot) bool {
+func (s *Store) canApplySnapshot(rangeID roachpb.RangeID, snap raftpb.Snapshot) bool {
 	if r, ok := s.replicas[rangeID]; ok && r.isInitialized() {
 		// We have the range and it's initialized, so let the snapshot
 		// through.

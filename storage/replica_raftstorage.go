@@ -30,7 +30,7 @@ import (
 	"github.com/gogo/protobuf/proto"
 )
 
-// InitialState implements the raft.Storage interface.
+// initialState implements the raft.Storage interface.
 func (r *Replica) InitialState() (raftpb.HardState, raftpb.ConfState, error) {
 	var hs raftpb.HardState
 	desc := r.Desc()
@@ -369,8 +369,8 @@ func (r *Replica) Snapshot() (raftpb.Snapshot, error) {
 	}, nil
 }
 
-// Append the given entries to the raft log.
-func (r *Replica) Append(entries []raftpb.Entry) error {
+// append the given entries to the raft log.
+func (r *Replica) append(entries []raftpb.Entry) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -440,8 +440,8 @@ func (r *Replica) updateRangeInfo() error {
 	return nil
 }
 
-// ApplySnapshot updates the replica based on the given snapshot.
-func (r *Replica) ApplySnapshot(snap raftpb.Snapshot) error {
+// applySnapshot updates the replica based on the given snapshot.
+func (r *Replica) applySnapshot(snap raftpb.Snapshot) error {
 	snapData := roachpb.RaftSnapshotData{}
 	err := proto.Unmarshal(snap.Data, &snapData)
 	if err != nil {
@@ -551,8 +551,8 @@ func (r *Replica) ApplySnapshot(snap raftpb.Snapshot) error {
 	return nil
 }
 
-// SetHardState persists the raft HardState.
-func (r *Replica) SetHardState(st raftpb.HardState) error {
+// setHardState persists the raft HardState.
+func (r *Replica) setHardState(st raftpb.HardState) error {
 	return engine.MVCCPutProto(r.store.Engine(), nil, keys.RaftHardStateKey(r.Desc().RangeID),
 		roachpb.ZeroTimestamp, nil, &st)
 }

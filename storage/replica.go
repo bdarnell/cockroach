@@ -1039,18 +1039,18 @@ func (r *Replica) handleRaftReady() error {
 	logRaftReady(r.store.StoreID(), desc.RangeID, rd)
 
 	if !raft.IsEmptySnap(rd.Snapshot) {
-		if err := r.ApplySnapshot(rd.Snapshot); err != nil {
+		if err := r.applySnapshot(rd.Snapshot); err != nil {
 			return err
 		}
 		// TODO(bdarnell): update coalesced heartbeat mapping with snapshot info.
 	}
 	if len(rd.Entries) > 0 {
-		if err := r.Append(rd.Entries); err != nil {
+		if err := r.append(rd.Entries); err != nil {
 			return err
 		}
 	}
 	if !raft.IsEmptyHardState(rd.HardState) {
-		if err := r.SetHardState(rd.HardState); err != nil {
+		if err := r.setHardState(rd.HardState); err != nil {
 			return err
 		}
 	}
@@ -1144,13 +1144,13 @@ func (r *Replica) handleRaftReady() error {
 func (r *Replica) sendRaftMessage(msg raftpb.Message) {
 	groupID := r.Desc().RangeID
 	r.store.mu.RLock()
-	toReplica, err := r.store.ReplicaDescriptor(groupID, roachpb.ReplicaID(msg.To))
+	toReplica, err := r.store.replicaDescriptor(groupID, roachpb.ReplicaID(msg.To))
 	if err != nil {
 		log.Warningf("failed to lookup recipient replica %d in group %s: %s", msg.To, groupID, err)
 		r.store.mu.RUnlock()
 		return
 	}
-	fromReplica, err := r.store.ReplicaDescriptor(groupID, roachpb.ReplicaID(msg.From))
+	fromReplica, err := r.store.replicaDescriptor(groupID, roachpb.ReplicaID(msg.From))
 	if err != nil {
 		log.Warningf("failed to lookup sender replica %d in group %s: %s", msg.From, groupID, err)
 		r.store.mu.RUnlock()
