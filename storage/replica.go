@@ -1083,9 +1083,9 @@ func (r *Replica) handleRaftReady() error {
 				return err
 			}
 
-			if err := r.processRaftCommand(cmdIDKey(commandID), e.Index, command); err != nil {
-				log.Infof("TODO(bdarnell): error handling for applied commands: %s", err)
-			}
+			// Discard errors from processRaftCommand. The error has been sent
+			// to the client that originated it, where it will be handled.
+			_ = r.processRaftCommand(cmdIDKey(commandID), e.Index, command)
 
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
@@ -1109,7 +1109,6 @@ func (r *Replica) handleRaftReady() error {
 				r.raftGroup.ApplyConfChange(cc)
 				r.Unlock()
 			} else {
-				log.Infof("TODO(bdarnell): error handling for applied commands: %s", err)
 				r.Lock()
 				r.raftGroup.ApplyConfChange(raftpb.ConfChange{})
 				r.Unlock()
