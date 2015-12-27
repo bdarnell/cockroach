@@ -843,6 +843,8 @@ func (s *Store) RaftStatus(rangeID roachpb.RangeID) *raft.Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if r, ok := s.replicas[rangeID]; ok {
+		r.Lock()
+		defer r.Unlock()
 		return r.raftGroup.Status()
 	}
 	return nil
@@ -1596,7 +1598,10 @@ func (s *Store) checkRaftGroup(rangeID roachpb.RangeID) {
 		s.mu.Lock()
 		s.pendingRaftGroups[rangeID] = struct{}{}
 		s.mu.Unlock()
-		s.wakeRaftLoop <- struct{}{}
+		select {
+		case s.wakeRaftLoop <- struct{}{}:
+		case <-s.stopper.ShouldStop():
+		}
 	}()
 }
 

@@ -26,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/multiraft"
 	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/rpc"
+	"github.com/cockroachdb/cockroach/storage"
 	"github.com/cockroachdb/cockroach/util"
 	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/gogo/protobuf/proto"
@@ -50,18 +51,18 @@ type rpcTransport struct {
 	rpcServer  *rpc.Server
 	rpcContext *rpc.Context
 	mu         sync.Mutex
-	servers    map[roachpb.StoreID]multiraft.ServerInterface
+	servers    map[roachpb.StoreID]func(*multiraft.RaftMessageRequest) error
 	queues     map[roachpb.StoreID]chan *multiraft.RaftMessageRequest
 }
 
 // newRPCTransport creates a new rpcTransport with specified gossip and rpc server.
 func newRPCTransport(gossip *gossip.Gossip, rpcServer *rpc.Server, rpcContext *rpc.Context) (
-	multiraft.Transport, error) {
+	storage.RaftTransport, error) {
 	t := &rpcTransport{
 		gossip:     gossip,
 		rpcServer:  rpcServer,
 		rpcContext: rpcContext,
-		servers:    make(map[roachpb.StoreID]multiraft.ServerInterface),
+		servers:    make(map[roachpb.StoreID]func(*multiraft.RaftMessageRequest) error),
 		queues:     make(map[roachpb.StoreID]chan *multiraft.RaftMessageRequest),
 	}
 
@@ -95,13 +96,13 @@ func (t *rpcTransport) RaftMessage(args proto.Message, callback func(proto.Messa
 	// (ab)using the async handler mechanism to get this (synchronous)
 	// handler called in the RPC server's goroutine so we can preserve
 	// order of incoming messages.
-	resp, err := server.RaftMessage(req)
-	callback(resp, err)
+	err := server(req)
+	callback(&multiraft.RaftMessageResponse{}, err)
 }
 
 // Listen implements the multiraft.Transport interface by registering a ServerInterface
 // to receive proxied messages.
-func (t *rpcTransport) Listen(id roachpb.StoreID, server multiraft.ServerInterface) error {
+func (t *rpcTransport) Listen(id roachpb.StoreID, server func(*multiraft.RaftMessageRequest) error) error {
 	t.mu.Lock()
 	t.servers[id] = server
 	t.mu.Unlock()
