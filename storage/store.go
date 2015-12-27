@@ -1006,25 +1006,9 @@ func (s *Store) SplitRange(origRng, newRng *Replica) error {
 		return util.Errorf("orig range is not splittable by new range: %+v, %+v", origDesc, newDesc)
 	}
 
-	// Here be concurrency dragons: we must release the lock in order to
-	// call multiraft.RemoveGroup (see lock order comments at the
-	// declaration of store.mu). The range may be recreated by an
-	// incoming raft message while the lock is released, so we must
-	// retry until it stays gone after we reacquire the lock. Replicas
-	// are only created in two places (after startup): this method
-	// creates initialized replicas (and this method cannot race with
-	// itself because it is only called on the processRaft goroutine),
-	// and GroupStorage creates uninitialized replicas. Uninitialized
-	// replicas can only become initialized by the application of an
-	// initial snapshot, which will be blocked as long as we have not
-	// yet updated replicasByKey. Therefore we do not need to worry
-	// about initialized replicas being created concurrently, only
-	// uninitialized ones.
 	s.mu.Lock()
-	for {
-		if _, ok := s.uninitReplicas[newDesc.RangeID]; !ok {
-			break
-		}
+	defer s.mu.Unlock()
+	if _, ok := s.uninitReplicas[newDesc.RangeID]; ok {
 		// If we have an uninitialized replica of the new range, delete it
 		// to make way for the complete one created by the split. A live
 		// uninitialized raft group cannot be converted to an
@@ -1033,15 +1017,7 @@ func (s *Store) SplitRange(origRng, newRng *Replica) error {
 		// removed before we install the new range into s.replicas.
 		delete(s.uninitReplicas, newDesc.RangeID)
 		delete(s.replicas, newDesc.RangeID)
-		s.mu.Unlock()
-		// TODO(bdarnell): multiraft.RemoveGroup
-		/*if err := s.multiraft.RemoveGroup(newDesc.RangeID, 0); err != nil {
-			return util.Errorf("couldn't remove uninitialized range's group %d: %s", newDesc.RangeID, err)
-		}*/
-		s.mu.Lock()
 	}
-	// The lock is held without interruption for the remainder of this method.
-	defer s.mu.Unlock()
 
 	// Replace the end key of the original range with the start key of
 	// the new range. Reinsert the range since the btree is keyed by range end keys.
@@ -1185,22 +1161,6 @@ func (s *Store) removeReplicaImpl(rep *Replica, origDesc roachpb.RangeDescriptor
 		return util.Errorf("cannot remove replica %s; replica ID has changed (%s >= %s)",
 			rep, rd.ReplicaID, origDesc.NextReplicaID)
 	}
-	/*var replicaID roachpb.ReplicaID
-	if rd != nil {
-		replicaID = rd.ReplicaID
-	} else {
-		replicaID = 0
-	}*/
-
-	// RemoveGroup needs to access the storage, which in turn needs the
-	// lock. Some care is needed to avoid deadlocks. We remove the group
-	// from multiraft outside the scope of s.mu; this is effectively
-	// synchronized by the fact that this method runs on the processRaft
-	// goroutine.
-	// TODO(bdarnell): multiraft.RemoveGroup
-	/*if err := s.multiraft.RemoveGroup(rangeID, replicaID); err != nil {
-		return err
-	}*/
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
