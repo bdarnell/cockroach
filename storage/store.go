@@ -525,7 +525,7 @@ func (s *Store) Start(stopper *stop.Stopper) error {
 	s.mu.Unlock()
 
 	// Start Raft processing goroutines.
-	if err := s.ctx.Transport.Listen(s.StoreID(), s.handleRaftMessage); err != nil {
+	if err := s.ctx.Transport.Listen(s.StoreID(), s.enqueueRaftMessage); err != nil {
 		return err
 	}
 	s.processRaft()
