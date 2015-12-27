@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/gossip"
-	"github.com/cockroachdb/cockroach/multiraft"
 	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/rpc"
 	"github.com/cockroachdb/cockroach/storage"
@@ -50,8 +49,8 @@ type rpcTransport struct {
 	rpcServer  *rpc.Server
 	rpcContext *rpc.Context
 	mu         sync.Mutex
-	servers    map[roachpb.StoreID]func(*multiraft.RaftMessageRequest) error
-	queues     map[roachpb.StoreID]chan *multiraft.RaftMessageRequest
+	servers    map[roachpb.StoreID]func(*storage.RaftMessageRequest) error
+	queues     map[roachpb.StoreID]chan *storage.RaftMessageRequest
 }
 
 // newRPCTransport creates a new rpcTransport with specified gossip and rpc server.
@@ -61,13 +60,13 @@ func newRPCTransport(gossip *gossip.Gossip, rpcServer *rpc.Server, rpcContext *r
 		gossip:     gossip,
 		rpcServer:  rpcServer,
 		rpcContext: rpcContext,
-		servers:    make(map[roachpb.StoreID]func(*multiraft.RaftMessageRequest) error),
-		queues:     make(map[roachpb.StoreID]chan *multiraft.RaftMessageRequest),
+		servers:    make(map[roachpb.StoreID]func(*storage.RaftMessageRequest) error),
+		queues:     make(map[roachpb.StoreID]chan *storage.RaftMessageRequest),
 	}
 
 	if t.rpcServer != nil {
 		if err := t.rpcServer.RegisterAsync(raftMessageName, false, /*not public*/
-			t.RaftMessage, &multiraft.RaftMessageRequest{}); err != nil {
+			t.RaftMessage, &storage.RaftMessageRequest{}); err != nil {
 			return nil, err
 		}
 	}
@@ -77,7 +76,7 @@ func newRPCTransport(gossip *gossip.Gossip, rpcServer *rpc.Server, rpcContext *r
 
 // RaftMessage proxies the incoming request to the listening server interface.
 func (t *rpcTransport) RaftMessage(args proto.Message, callback func(proto.Message, error)) {
-	req := args.(*multiraft.RaftMessageRequest)
+	req := args.(*storage.RaftMessageRequest)
 
 	t.mu.Lock()
 	server, ok := t.servers[req.ToReplica.StoreID]
@@ -96,12 +95,12 @@ func (t *rpcTransport) RaftMessage(args proto.Message, callback func(proto.Messa
 	// handler called in the RPC server's goroutine so we can preserve
 	// order of incoming messages.
 	err := server(req)
-	callback(&multiraft.RaftMessageResponse{}, err)
+	callback(&storage.RaftMessageResponse{}, err)
 }
 
 // Listen implements the multiraft.Transport interface by registering a ServerInterface
 // to receive proxied messages.
-func (t *rpcTransport) Listen(id roachpb.StoreID, server func(*multiraft.RaftMessageRequest) error) error {
+func (t *rpcTransport) Listen(id roachpb.StoreID, server func(*storage.RaftMessageRequest) error) error {
 	t.mu.Lock()
 	t.servers[id] = server
 	t.mu.Unlock()
@@ -158,8 +157,8 @@ func (t *rpcTransport) processQueue(nodeID roachpb.NodeID, storeID roachpb.Store
 	}
 
 	done := make(chan *gorpc.Call, cap(ch))
-	var req *multiraft.RaftMessageRequest
-	protoResp := &multiraft.RaftMessageResponse{}
+	var req *storage.RaftMessageRequest
+	protoResp := &storage.RaftMessageResponse{}
 	for {
 		select {
 		case <-t.rpcContext.Stopper.ShouldStop():
@@ -188,11 +187,11 @@ func (t *rpcTransport) processQueue(nodeID roachpb.NodeID, storeID roachpb.Store
 }
 
 // Send a message to the recipient specified in the request.
-func (t *rpcTransport) Send(req *multiraft.RaftMessageRequest) error {
+func (t *rpcTransport) Send(req *storage.RaftMessageRequest) error {
 	t.mu.Lock()
 	ch, ok := t.queues[req.ToReplica.StoreID]
 	if !ok {
-		ch = make(chan *multiraft.RaftMessageRequest, raftSendBufferSize)
+		ch = make(chan *storage.RaftMessageRequest, raftSendBufferSize)
 		t.queues[req.ToReplica.StoreID] = ch
 		go t.processQueue(req.ToReplica.NodeID, req.ToReplica.StoreID)
 	}

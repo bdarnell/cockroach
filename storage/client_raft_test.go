@@ -28,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/client"
 	"github.com/cockroachdb/cockroach/gossip"
 	"github.com/cockroachdb/cockroach/keys"
-	"github.com/cockroachdb/cockroach/multiraft"
 	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/storage"
 	"github.com/cockroachdb/cockroach/storage/engine"
@@ -1104,7 +1103,7 @@ func TestRaftAfterRemoveRange(t *testing.T) {
 		NodeID:    roachpb.NodeID(mtc.stores[2].StoreID()),
 		StoreID:   mtc.stores[2].StoreID(),
 	}
-	if err := mtc.transport.Send(&multiraft.RaftMessageRequest{
+	if err := mtc.transport.Send(&storage.RaftMessageRequest{
 		GroupID:     0,
 		ToReplica:   replica1,
 		FromReplica: replica2,
@@ -1411,7 +1410,7 @@ func TestReplicateReAddAfterDown(t *testing.T) {
 
 // TestLeaderRemoveSelf verifies that a leader can remove itself
 // without panicking and future access to the range returns a
-// RangeNotFoundError (not multiraft.ErrGroupDeleted, and even before
+// RangeNotFoundError (not errRaftGroupDeleted, and even before
 // the ReplicaGCQueue has run).
 func TestLeaderRemoveSelf(t *testing.T) {
 	defer leaktest.AfterTest(t)

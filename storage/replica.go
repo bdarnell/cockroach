@@ -36,7 +36,6 @@ import (
 	"github.com/cockroachdb/cockroach/config"
 	"github.com/cockroachdb/cockroach/gossip"
 	"github.com/cockroachdb/cockroach/keys"
-	"github.com/cockroachdb/cockroach/multiraft"
 	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/storage/engine"
 	"github.com/cockroachdb/cockroach/util"
@@ -652,7 +651,7 @@ func (r *Replica) Send(ctx context.Context, ba roachpb.BatchRequest) (*roachpb.B
 	} else {
 		panic(fmt.Sprintf("don't know how to handle command %s", ba))
 	}
-	if err == multiraft.ErrGroupDeleted {
+	if err == errRaftGroupDeleted {
 		// This error needs to be converted appropriately so that
 		// clients will retry.
 		err = roachpb.NewRangeNotFoundError(r.Desc().RangeID)
@@ -959,8 +958,8 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchReques
 	if replica == nil {
 		return nil, roachpb.NewRangeNotFoundError(desc.RangeID)
 	}
-	idKeyBuf := make([]byte, 0, multiraft.CommandIDLen)
-	idKeyBuf = encoding.EncodeUint64(idKeyBuf, uint64(rand.Int63()))[:multiraft.CommandIDLen]
+	idKeyBuf := make([]byte, 0, raftCommandIDLen)
+	idKeyBuf = encoding.EncodeUint64(idKeyBuf, uint64(rand.Int63()))[:raftCommandIDLen]
 	idKey := cmdIDKey(idKeyBuf)
 	pendingCmd := &pendingCmd{
 		ctx:   ctx,
@@ -1004,7 +1003,7 @@ func (r *Replica) proposePendingCmdLocked(p *pendingCmd) error {
 				// needs to understand it; it cannot simply be an opaque command.
 				log.Infof("raft: proposing %s %v for range %d", crt.ChangeType, crt.Replica, p.raftCmd.RangeID)
 
-				ctx := multiraft.ConfChangeContext{
+				ctx := ConfChangeContext{
 					CommandID: string(p.idKey),
 					Payload:   data,
 					Replica:   crt.Replica,
@@ -1092,7 +1091,7 @@ func (r *Replica) handleRaftReady() error {
 			if err := cc.Unmarshal(e.Data); err != nil {
 				return err
 			}
-			ctx := multiraft.ConfChangeContext{}
+			ctx := ConfChangeContext{}
 			if err := ctx.Unmarshal(cc.Context); err != nil {
 				return err
 			}
@@ -1154,7 +1153,7 @@ func (r *Replica) sendRaftMessage(msg raftpb.Message) {
 		return
 	}
 	r.store.mu.RUnlock()
-	err = r.store.ctx.Transport.Send(&multiraft.RaftMessageRequest{
+	err = r.store.ctx.Transport.Send(&RaftMessageRequest{
 		GroupID:     groupID,
 		ToReplica:   toReplica,
 		FromReplica: fromReplica,

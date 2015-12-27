@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/cockroachdb/cockroach/roachpb"
+	"github.com/cockroachdb/cockroach/security"
 	"github.com/cockroachdb/cockroach/util/log"
 	"github.com/coreos/etcd/raft"
 )
@@ -150,4 +151,12 @@ func logRaftReady(storeID roachpb.StoreID, groupID roachpb.RangeID, ready raft.R
 			log.Infof("Outgoing Message[%d]: %.200s", i, raft.DescribeMessage(m, raftEntryFormatter))
 		}
 	}
+}
+
+var _ security.RequestWithUser = &RaftMessageRequest{}
+
+// GetUser implements security.RequestWithUser.
+// Raft messages are always sent by the node user.
+func (*RaftMessageRequest) GetUser() string {
+	return security.NodeUser
 }

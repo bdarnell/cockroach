@@ -23,7 +23,6 @@ import (
 	"sync"
 
 	"github.com/cockroachdb/cockroach/base"
-	"github.com/cockroachdb/cockroach/multiraft"
 	"github.com/cockroachdb/cockroach/roachpb"
 	crpc "github.com/cockroachdb/cockroach/rpc"
 	"github.com/cockroachdb/cockroach/rpc/codec"
@@ -43,13 +42,13 @@ type RaftTransport interface {
 	// Listen informs the RaftTransport of a local store's ID and callback interface.
 	// The RaftTransport should associate the given id with the server object so other RaftTransport's
 	// Connect methods can find it.
-	Listen(id roachpb.StoreID, server func(*multiraft.RaftMessageRequest) error) error
+	Listen(id roachpb.StoreID, server func(*RaftMessageRequest) error) error
 
 	// Stop undoes a previous Listen.
 	Stop(id roachpb.StoreID)
 
 	// Send a message to the node specified in the request's To field.
-	Send(req *multiraft.RaftMessageRequest) error
+	Send(req *RaftMessageRequest) error
 
 	// Close all associated connections.
 	Close()
@@ -85,7 +84,7 @@ func NewLocalRPCTransport(stopper *stop.Stopper) RaftTransport {
 	}
 }
 
-func (lt *localRPCTransport) Listen(id roachpb.StoreID, server func(*multiraft.RaftMessageRequest) error) error {
+func (lt *localRPCTransport) Listen(id roachpb.StoreID, server func(*RaftMessageRequest) error) error {
 	ctx := crpc.Context{
 		Context: base.Context{
 			Insecure: true,
@@ -102,10 +101,10 @@ func (lt *localRPCTransport) Listen(id roachpb.StoreID, server func(*multiraft.R
 					log.Fatalf("caught panic: %s", p)
 				}
 			}()
-			args := argsI.(*multiraft.RaftMessageRequest)
+			args := argsI.(*RaftMessageRequest)
 			err := server(args)
-			callback(&multiraft.RaftMessageResponse{}, err)
-		}, &multiraft.RaftMessageRequest{})
+			callback(&RaftMessageResponse{}, err)
+		}, &RaftMessageRequest{})
 	if err != nil {
 		return err
 	}
@@ -172,12 +171,12 @@ func (lt *localRPCTransport) getClient(id roachpb.StoreID) (*netrpc.Client, erro
 	return client, err
 }
 
-func (lt *localRPCTransport) Send(req *multiraft.RaftMessageRequest) error {
+func (lt *localRPCTransport) Send(req *RaftMessageRequest) error {
 	client, err := lt.getClient(req.ToReplica.StoreID)
 	if err != nil {
 		return err
 	}
-	call := client.Go(raftMessageName, req, &multiraft.RaftMessageResponse{}, nil)
+	call := client.Go(raftMessageName, req, &RaftMessageResponse{}, nil)
 	select {
 	case <-call.Done:
 		// If the call failed synchronously, report an error.

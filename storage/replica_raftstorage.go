@@ -21,7 +21,6 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/cockroach/keys"
-	"github.com/cockroachdb/cockroach/multiraft"
 	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/storage/engine"
 	"github.com/cockroachdb/cockroach/util"
@@ -30,8 +29,6 @@ import (
 	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/gogo/protobuf/proto"
 )
-
-var _ multiraft.WriteableGroupStorage = &Replica{}
 
 // InitialState implements the raft.Storage interface.
 func (r *Replica) InitialState() (raftpb.HardState, raftpb.ConfState, error) {

@@ -18,6 +18,7 @@ package storage
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -31,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/config"
 	"github.com/cockroachdb/cockroach/gossip"
 	"github.com/cockroachdb/cockroach/keys"
-	"github.com/cockroachdb/cockroach/multiraft"
 	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/storage/engine"
 	"github.com/cockroachdb/cockroach/util"
@@ -88,6 +88,10 @@ var changeTypeInternalToRaft = map[roachpb.ReplicaChangeType]raftpb.ConfChangeTy
 	roachpb.ADD_REPLICA:    raftpb.ConfChangeAddNode,
 	roachpb.REMOVE_REPLICA: raftpb.ConfChangeRemoveNode,
 }
+
+// errRaftGroupDeleted is returned for commands which are pending
+// while their group is deleted.
+var errRaftGroupDeleted = errors.New("raft group deleted")
 
 // verifyKeys verifies keys. If checkEndKey is true, then the end key
 // is verified to be non-nil and greater than start key. If
@@ -276,11 +280,10 @@ type Store struct {
 
 	replicaDescCache  *cache.UnorderedCache
 	pendingRaftGroups map[roachpb.RangeID]struct{}
-	raftRequestChan   chan *multiraft.RaftMessageRequest
+	raftRequestChan   chan *RaftMessageRequest
 }
 
 var _ client.Sender = &Store{}
-var _ multiraft.Storage = &Store{}
 
 // A StoreContext encompasses the auxiliary objects and configuration
 // required to create a store.
@@ -390,7 +393,7 @@ func NewStore(ctx StoreContext, eng engine.Engine, nodeDesc *roachpb.NodeDescrip
 		}),
 		wakeRaftLoop:      make(chan struct{}, 1),
 		pendingRaftGroups: map[roachpb.RangeID]struct{}{},
-		raftRequestChan:   make(chan *multiraft.RaftMessageRequest, raftReqBufferSize),
+		raftRequestChan:   make(chan *RaftMessageRequest, raftReqBufferSize),
 	}
 
 	// Add range scanner and configure with queues.
@@ -1536,12 +1539,12 @@ func (s *Store) resolveWriteIntentError(ctx context.Context, wiErr *roachpb.Writ
 }
 
 // TODO(bdarnell): is this buffering necessary? sufficient?
-func (s *Store) enqueueRaftMessage(req *multiraft.RaftMessageRequest) error {
+func (s *Store) enqueueRaftMessage(req *RaftMessageRequest) error {
 	s.raftRequestChan <- req
 	return nil
 }
 
-func (s *Store) handleRaftMessage(req *multiraft.RaftMessageRequest) error {
+func (s *Store) handleRaftMessage(req *RaftMessageRequest) error {
 	switch req.Message.Type {
 	case raftpb.MsgSnap:
 		s.mu.Lock()
@@ -1589,7 +1592,7 @@ func (s *Store) handleRaftMessage(req *multiraft.RaftMessageRequest) error {
 	if err != nil {
 		return err
 	}
-	r := gs.(*Replica)
+	r := gs
 	r.Lock()
 	err = r.raftGroup.Step(req.Message)
 	r.Unlock()
@@ -1675,7 +1678,7 @@ func (s *Store) processRaft() {
 
 // GroupStorage implements the multiraft.Storage interface.
 // The caller must hold the store's lock.
-func (s *Store) GroupStorage(groupID roachpb.RangeID, replicaID roachpb.ReplicaID) (multiraft.WriteableGroupStorage, error) {
+func (s *Store) GroupStorage(groupID roachpb.RangeID, replicaID roachpb.ReplicaID) (*Replica, error) {
 	r, ok := s.replicas[groupID]
 	if !ok {
 		// Before creating the group, see if there is a tombstone which
@@ -1686,7 +1689,7 @@ func (s *Store) GroupStorage(groupID roachpb.RangeID, replicaID roachpb.ReplicaI
 			return nil, err
 		} else if ok {
 			if replicaID != 0 && replicaID < tombstone.NextReplicaID {
-				return nil, multiraft.ErrGroupDeleted
+				return nil, errRaftGroupDeleted
 			}
 		}
 

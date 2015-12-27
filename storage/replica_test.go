@@ -33,8 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/config"
 	"github.com/cockroachdb/cockroach/gossip"
 	"github.com/cockroachdb/cockroach/keys"
-	"github.com/cockroachdb/cockroach/multiraft"
-	"github.com/cockroachdb/cockroach/multiraft/storagetest"
 	"github.com/cockroachdb/cockroach/roachpb"
 	"github.com/cockroachdb/cockroach/rpc"
 	"github.com/cockroachdb/cockroach/storage/engine"
@@ -2831,36 +2829,6 @@ func TestTruncateLog(t *testing.T) {
 	}
 }
 
-func TestRaftStorage(t *testing.T) {
-	defer leaktest.AfterTest(t)
-	var eng engine.Engine
-	stopper := stop.NewStopper()
-	defer stopper.Stop()
-	storagetest.RunTests(t,
-		func(t *testing.T) storagetest.WriteableStorage {
-			eng = engine.NewInMem(roachpb.Attributes{Attrs: []string{"dc1", "mem"}}, 1<<20, stopper)
-			// Fake store to house the engine.
-			store := &Store{
-				ctx: StoreContext{
-					Clock: hlc.NewClock(hlc.UnixNano),
-				},
-				engine: eng,
-			}
-			rng, err := NewReplica(&roachpb.RangeDescriptor{
-				RangeID:  1,
-				StartKey: roachpb.RKeyMin,
-				EndKey:   roachpb.RKeyMax,
-			}, store)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return rng
-		},
-		func(t *testing.T, r storagetest.WriteableStorage) {
-			// Do nothing
-		})
-}
-
 // TestConditionFailedError tests that a ConditionFailedError correctly
 // bubbles up from MVCC to Range.
 func TestConditionFailedError(t *testing.T) {
@@ -3359,7 +3327,7 @@ func BenchmarkWriteCmdWithEventsAndConsumer(b *testing.B) {
 }
 
 // TestRequestLeaderEncounterGroupDeleteError verifies that a request leader proposal which fails with
-// multiraft.ErrGroupDeleted is converted to a RangeNotFoundError in the Store.
+// errRaftGroupDeleted is converted to a RangeNotFoundError in the Store.
 func TestRequestLeaderEncounterGroupDeleteError(t *testing.T) {
 	defer leaktest.AfterTest(t)
 	tc := testContext{
@@ -3368,9 +3336,9 @@ func TestRequestLeaderEncounterGroupDeleteError(t *testing.T) {
 	tc.Start(t)
 	defer tc.Stop()
 
-	// Mock proposeRaftCommand to return an ErrGroupDeleted error.
+	// Mock proposeRaftCommand to return an errRaftGroupDeleted error.
 	proposeRaftCommandFn := func(cmdIDKey, roachpb.RaftCommand) error {
-		return multiraft.ErrGroupDeleted
+		return errRaftGroupDeleted
 	}
 	rng, err := NewReplica(testRangeDescriptor(), tc.store)
 	rng.proposeRaftCommandFn = proposeRaftCommandFn
