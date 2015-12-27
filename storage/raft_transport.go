@@ -35,6 +35,9 @@ import (
 // TODO(bdarnell): remove/change raftMessageName
 const raftMessageName = "MultiRaft.RaftMessage"
 
+// RaftMessageHandler is the callback type used by RaftTransport.
+type RaftMessageHandler func(*RaftMessageRequest) error
+
 // The RaftTransport interface is supplied by the application to manage communication with
 // other nodes. It is responsible for mapping from IDs to some communication channel.
 // TODO(bdarnell): this interface needs to be updated and may just go away.
@@ -42,7 +45,7 @@ type RaftTransport interface {
 	// Listen informs the RaftTransport of a local store's ID and callback interface.
 	// The RaftTransport should associate the given id with the server object so other RaftTransport's
 	// Connect methods can find it.
-	Listen(id roachpb.StoreID, server func(*RaftMessageRequest) error) error
+	Listen(id roachpb.StoreID, server RaftMessageHandler) error
 
 	// Stop undoes a previous Listen.
 	Stop(id roachpb.StoreID)
@@ -84,7 +87,7 @@ func NewLocalRPCTransport(stopper *stop.Stopper) RaftTransport {
 	}
 }
 
-func (lt *localRPCTransport) Listen(id roachpb.StoreID, server func(*RaftMessageRequest) error) error {
+func (lt *localRPCTransport) Listen(id roachpb.StoreID, handler RaftMessageHandler) error {
 	ctx := crpc.Context{
 		Context: base.Context{
 			Insecure: true,
@@ -102,7 +105,7 @@ func (lt *localRPCTransport) Listen(id roachpb.StoreID, server func(*RaftMessage
 				}
 			}()
 			args := argsI.(*RaftMessageRequest)
-			err := server(args)
+			err := handler(args)
 			callback(&RaftMessageResponse{}, err)
 		}, &RaftMessageRequest{})
 	if err != nil {

@@ -49,7 +49,7 @@ type rpcTransport struct {
 	rpcServer  *rpc.Server
 	rpcContext *rpc.Context
 	mu         sync.Mutex
-	servers    map[roachpb.StoreID]func(*storage.RaftMessageRequest) error
+	handlers   map[roachpb.StoreID]storage.RaftMessageHandler
 	queues     map[roachpb.StoreID]chan *storage.RaftMessageRequest
 }
 
@@ -60,7 +60,7 @@ func newRPCTransport(gossip *gossip.Gossip, rpcServer *rpc.Server, rpcContext *r
 		gossip:     gossip,
 		rpcServer:  rpcServer,
 		rpcContext: rpcContext,
-		servers:    make(map[roachpb.StoreID]func(*storage.RaftMessageRequest) error),
+		handlers:   make(map[roachpb.StoreID]storage.RaftMessageHandler),
 		queues:     make(map[roachpb.StoreID]chan *storage.RaftMessageRequest),
 	}
 
@@ -79,7 +79,7 @@ func (t *rpcTransport) RaftMessage(args proto.Message, callback func(proto.Messa
 	req := args.(*storage.RaftMessageRequest)
 
 	t.mu.Lock()
-	server, ok := t.servers[req.ToReplica.StoreID]
+	handler, ok := t.handlers[req.ToReplica.StoreID]
 	t.mu.Unlock()
 
 	if !ok {
@@ -94,15 +94,15 @@ func (t *rpcTransport) RaftMessage(args proto.Message, callback func(proto.Messa
 	// (ab)using the async handler mechanism to get this (synchronous)
 	// handler called in the RPC server's goroutine so we can preserve
 	// order of incoming messages.
-	err := server(req)
+	err := handler(req)
 	callback(&storage.RaftMessageResponse{}, err)
 }
 
 // Listen implements the multiraft.Transport interface by registering a ServerInterface
 // to receive proxied messages.
-func (t *rpcTransport) Listen(id roachpb.StoreID, server func(*storage.RaftMessageRequest) error) error {
+func (t *rpcTransport) Listen(id roachpb.StoreID, handler storage.RaftMessageHandler) error {
 	t.mu.Lock()
-	t.servers[id] = server
+	t.handlers[id] = handler
 	t.mu.Unlock()
 	return nil
 }
@@ -111,7 +111,7 @@ func (t *rpcTransport) Listen(id roachpb.StoreID, server func(*storage.RaftMessa
 func (t *rpcTransport) Stop(id roachpb.StoreID) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.servers, id)
+	delete(t.handlers, id)
 }
 
 // processQueue creates a client and sends messages from its designated queue
