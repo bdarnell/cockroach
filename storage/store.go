@@ -1558,7 +1558,7 @@ func (s *Store) handleRaftMessage(req *multiraft.RaftMessageRequest) error {
 					break
 				}
 			}
-			if !found {
+			if !found && req.FromReplica.ReplicaID < r.Desc().NextReplicaID {
 				return nil
 			}
 		}
@@ -1575,7 +1575,6 @@ func (s *Store) handleRaftMessage(req *multiraft.RaftMessageRequest) error {
 	gs, err := s.GroupStorage(req.GroupID, req.ToReplica.ReplicaID)
 	s.mu.Unlock()
 	if err != nil {
-		s.mu.Unlock()
 		return err
 	}
 	r := gs.(*Replica)
@@ -1695,6 +1694,10 @@ func (s *Store) GroupStorage(groupID roachpb.RangeID, replicaID roachpb.ReplicaI
 			return nil, err
 		}
 		s.uninitReplicas[r.Desc().RangeID] = r
+	} else {
+		if err := r.setReplicaID(replicaID); err != nil {
+			return nil, err
+		}
 	}
 	return r, nil
 }

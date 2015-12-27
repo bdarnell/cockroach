@@ -191,7 +191,8 @@ func (lt *localRPCTransport) Send(req *multiraft.RaftMessageRequest) error {
 				return
 			}
 			if call.Error != nil {
-				log.Errorf("sending rpc failed: %s", call.Error)
+				log.Errorf("sending %s rpc from %s to %s failed: %s", req.Message.Type,
+					req.FromReplica, req.ToReplica, call.Error)
 			}
 		}()
 		return nil
