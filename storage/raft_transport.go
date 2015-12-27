@@ -76,7 +76,7 @@ type localRPCTransport struct {
 // can be an arbitrary string). Each instance binds to a different unused port on
 // localhost.
 // Because this is just for local testing, it doesn't use TLS.
-// TODO(bdarnell): get rid of LocalRPCTransport?
+// TODO(bdarnell): can we get rid of LocalRPCTransport?
 func NewLocalRPCTransport(stopper *stop.Stopper) RaftTransport {
 	return &localRPCTransport{
 		servers: make(map[roachpb.StoreID]serverWithAddr),

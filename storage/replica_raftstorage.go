@@ -369,7 +369,7 @@ func (r *Replica) Snapshot() (raftpb.Snapshot, error) {
 	}, nil
 }
 
-// Append implements the multiraft.WriteableGroupStorage interface.
+// Append the given entries to the raft log.
 func (r *Replica) Append(entries []raftpb.Entry) error {
 	if len(entries) == 0 {
 		return nil
@@ -440,7 +440,7 @@ func (r *Replica) updateRangeInfo() error {
 	return nil
 }
 
-// ApplySnapshot implements the multiraft.WriteableGroupStorage interface.
+// ApplySnapshot updates the replica based on the given snapshot.
 func (r *Replica) ApplySnapshot(snap raftpb.Snapshot) error {
 	snapData := roachpb.RaftSnapshotData{}
 	err := proto.Unmarshal(snap.Data, &snapData)
@@ -551,7 +551,7 @@ func (r *Replica) ApplySnapshot(snap raftpb.Snapshot) error {
 	return nil
 }
 
-// SetHardState implements the multiraft.WriteableGroupStorage interface.
+// SetHardState persists the raft HardState.
 func (r *Replica) SetHardState(st raftpb.HardState) error {
 	return engine.MVCCPutProto(r.store.Engine(), nil, keys.RaftHardStateKey(r.Desc().RangeID),
 		roachpb.ZeroTimestamp, nil, &st)

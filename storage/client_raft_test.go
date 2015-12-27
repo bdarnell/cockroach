@@ -299,10 +299,10 @@ func TestRestoreReplicas(t *testing.T) {
 	}
 
 	// TODO(bdarnell): use the stopper.Quiesce() method. The problem
-	//   right now is that raft / multiraft isn't creating a task for
-	//   high-level work it's creating while snapshotting and catching
-	//   up. Ideally we'll be able to capture that and then can just
-	//   invoke mtc.stopper.Quiesce() here.
+	// right now is that raft isn't creating a task for high-level work
+	// it's creating while snapshotting and catching up. Ideally we'll
+	// be able to capture that and then can just invoke
+	// mtc.stopper.Quiesce() here.
 
 	// TODO(bdarnell): initial creation and replication needs to be atomic;
 	// cutting off the process too soon currently results in a corrupted range.
@@ -1063,7 +1063,7 @@ func TestRangeDescriptorSnapshotRace(t *testing.T) {
 	}
 }
 
-// TestRaftAfterRemoveRange verifies that the MultiRaft state removes
+// TestRaftAfterRemoveRange verifies that the raft state removes
 // a remote node correctly after the Replica was removed from the Store.
 func TestRaftAfterRemoveRange(t *testing.T) {
 	defer leaktest.AfterTest(t)
@@ -1114,7 +1114,8 @@ func TestRaftAfterRemoveRange(t *testing.T) {
 		}}); err != nil {
 		t.Fatal(err)
 	}
-	// Execute another replica change to ensure that MultiRaft has processed the heartbeat just sent.
+	// Execute another replica change to ensure that raft has processed
+	// the heartbeat just sent.
 	mtc.replicateRange(roachpb.RangeID(1), 0, 1)
 }
 

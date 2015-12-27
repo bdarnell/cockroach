@@ -33,6 +33,7 @@ import (
 )
 
 const (
+	// TODO(bdarnell): consider changing raftServiceName/raftMessageName
 	raftServiceName = "MultiRaft"
 	raftMessageName = raftServiceName + ".RaftMessage"
 	// Outgoing messages are queued on a per-node basis on a channel of
@@ -43,7 +44,7 @@ const (
 	raftIdleTimeout = time.Minute
 )
 
-// rpcTransport handles the rpc messages for multiraft.
+// rpcTransport handles the rpc messages for raft.
 type rpcTransport struct {
 	gossip     *gossip.Gossip
 	rpcServer  *rpc.Server
@@ -87,19 +88,18 @@ func (t *rpcTransport) RaftMessage(args proto.Message, callback func(proto.Messa
 		return
 	}
 
-	// Raft responses are empty so we don't actually need to convert
-	// between multiraft's internal struct and the external proto
-	// representation. In fact, we don't even need to wait for the
-	// message to be processed to invoke the callback. We are just
-	// (ab)using the async handler mechanism to get this (synchronous)
-	// handler called in the RPC server's goroutine so we can preserve
-	// order of incoming messages.
+	// Raft responses are empty so we don't actually need to get a
+	// response from the handler. In fact, we don't even need to wait
+	// for the message to be processed to invoke the callback. We are
+	// just (ab)using the async handler mechanism to get this
+	// (synchronous) handler called in the RPC server's goroutine so we
+	// can preserve order of incoming messages.
 	err := handler(req)
 	callback(&storage.RaftMessageResponse{}, err)
 }
 
-// Listen implements the multiraft.Transport interface by registering a ServerInterface
-// to receive proxied messages.
+// Listen implements the storage.RaftTransport interface by
+// registering a RaftMessageHandler to receive proxied messages.
 func (t *rpcTransport) Listen(id roachpb.StoreID, handler storage.RaftMessageHandler) error {
 	t.mu.Lock()
 	t.handlers[id] = handler
@@ -107,7 +107,7 @@ func (t *rpcTransport) Listen(id roachpb.StoreID, handler storage.RaftMessageHan
 	return nil
 }
 
-// Stop implements the multiraft.Transport interface by unregistering the server id.
+// Stop implements the storage.RaftTransport interface by unregistering the server id.
 func (t *rpcTransport) Stop(id roachpb.StoreID) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -118,7 +118,7 @@ func (t *rpcTransport) Stop(id roachpb.StoreID) {
 // via that client, exiting when the client fails or when it idles out. All
 // messages remaining in the queue at that point are lost and a new instance of
 // processQueue should be started by the next message to be sent.
-// TODO(tschottdorf) should let MultiRaft know if the node is down;
+// TODO(tschottdorf) should let raft know if the node is down;
 // need a feedback mechanism for that. Potentially easiest is to arrange for
 // the next call to Send() to fail appropriately.
 func (t *rpcTransport) processQueue(nodeID roachpb.NodeID, storeID roachpb.StoreID) {

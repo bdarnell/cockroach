@@ -285,7 +285,8 @@ func (r *Replica) setReplicaID(replicaID roachpb.ReplicaID) error {
 	} else if r.replicaID > replicaID {
 		return util.Errorf("replicaID cannot move backwards")
 	} else if r.replicaID != 0 {
-		// TODO: clean up previous raftGroup (cancel pending commands, update peers)
+		// TODO(bdarnell): clean up previous raftGroup (cancel pending commands,
+		// update peers)
 	}
 
 	desc := r.Desc()
@@ -982,6 +983,7 @@ func (r *Replica) proposeRaftCommand(ctx context.Context, ba roachpb.BatchReques
 	return pendingCmd, r.proposePendingCmdLocked(pendingCmd)
 }
 
+// proposePendingCmdLocked proposes or re-proposes a command in r.pendingCmds.
 func (r *Replica) proposePendingCmdLocked(p *pendingCmd) error {
 	desc := r.Desc()
 	if r.proposeRaftCommandFn != nil {
@@ -1103,7 +1105,7 @@ func (r *Replica) handleRaftReady() error {
 			r.store.cacheReplicaDescriptor(desc.RangeID, ctx.Replica)
 			r.store.mu.Unlock()
 			if err := r.processRaftCommand(cmdIDKey(ctx.CommandID), e.Index, command); err == nil {
-				// TODO: update coalesced heartbeat mapping
+				// TODO(bdarnell): update coalesced heartbeat mapping
 				r.Lock()
 				r.raftGroup.ApplyConfChange(cc)
 				r.Unlock()
@@ -1130,7 +1132,9 @@ func (r *Replica) handleRaftReady() error {
 		}
 		r.Unlock()
 	}
-	// TODO(bdarnell): is this right?
+	// TODO(bdarnell): need to check replica id and not Advance if it
+	// has changed. Or do we need more locking to guarantee that replica
+	// ID cannot change during handleRaftReady?
 	r.Lock()
 	r.raftGroup.Advance(rd)
 	r.Unlock()

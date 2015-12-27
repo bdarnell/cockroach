@@ -64,7 +64,7 @@ func TestSendAndReceive(t *testing.T) {
 	g := gossip.New(nodeRPCContext, gossip.TestBootstrap)
 	g.SetNodeID(roachpb.NodeID(1))
 
-	// Create several servers, each of which has two stores (A multiraft
+	// Create several servers, each of which has two stores (A raft
 	// node ID addresses a store). Node 1 has stores 1 and 2, node 2 has
 	// stores 3 and 4, etc.
 	//
