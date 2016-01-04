@@ -111,12 +111,9 @@ func TestReplicaGCQueueDropReplicaGCOnScan(t *testing.T) {
 		storage.DefaultLeaderLeaseDuration) + 1)
 
 	// Make sure the range is removed from the store.
-	util.SucceedsWithin(t, time.Second, func() error {
-		store := mtc.stores[1]
-		store.ForceReplicaGCScan(t)
-		if _, err := store.GetReplica(rangeID); !testutils.IsError(err, "range .* was not found") {
-			return util.Errorf("expected range removal: %s", err)
-		}
-		return nil
-	})
+	store := mtc.stores[1]
+	store.ForceReplicaGCScanAndProcess(t)
+	if _, err := store.GetReplica(rangeID); !testutils.IsError(err, "range .* was not found") {
+		t.Fatalf("expected range removal: %s", err)
+	}
 }

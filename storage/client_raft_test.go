@@ -705,7 +705,7 @@ func TestStoreRangeDownReplicate(t *testing.T) {
 			kickedOffReplicationQueue := false
 			for _, store := range mtc.stores {
 				if _, ok := idSet[store.StoreID()]; !ok {
-					store.ForceReplicaGCScan(t)
+					store.ForceReplicaGCScanAndProcess(t)
 				} else if !kickedOffReplicationQueue {
 					store.ForceReplicationScan(t)
 					kickedOffReplicationQueue = true
@@ -905,7 +905,7 @@ func TestReplicateAddAndRemove(t *testing.T) {
 
 		// Wait out the leader lease and the unleased duration to make the replica GC'able.
 		mtc.manualClock.Increment(int64(storage.ReplicaGCQueueInactivityThreshold+storage.DefaultLeaderLeaseDuration) + 1)
-		mtc.stores[1].ForceReplicaGCScan(t)
+		mtc.stores[1].ForceReplicaGCScanAndProcess(t)
 
 		// The removed store no longer has any of the data from the range.
 		verify([]int64{39, 0, 39, 39})
@@ -1324,7 +1324,7 @@ func TestReplicateRogueRemovedNode(t *testing.T) {
 	// Wait for the replica to be GC'd on node 1.
 	mtc.manualClock.Increment(int64(storage.DefaultLeaderLeaseDuration+
 		storage.ReplicaGCQueueInactivityThreshold) + 1)
-	mtc.stores[1].ForceReplicaGCScan(t)
+	mtc.stores[1].ForceReplicaGCScanAndProcess(t)
 
 	// Store 0 has two writes, 1 has erased everything, and 2 still has the first write.
 	mtc.waitForValues(roachpb.Key("a"), time.Second, []int64{16, 0, 5})
@@ -1365,7 +1365,7 @@ func TestReplicateRogueRemovedNode(t *testing.T) {
 	// lease will cause GC to do a consistent range lookup, where it
 	// will see that the range has been moved and delete the old
 	// replica.
-	mtc.stores[2].ForceReplicaGCScan(t)
+	mtc.stores[2].ForceReplicaGCScanAndProcess(t)
 	mtc.waitForValues(roachpb.Key("a"), 3*time.Second, []int64{16, 0, 0})
 
 	// Now that the group has been GC'd, the goroutine that was
