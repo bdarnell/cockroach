@@ -413,6 +413,9 @@ func (l *LocalCluster) processEvent(e dockerclient.EventOrError, monitorStopper 
 		l.events <- Event{NodeIndex: -1, Status: eventDie}
 		return false
 	}
+	if e.Status == "pull" {
+		return true
+	}
 
 	for i, n := range l.Nodes {
 		if n != nil && n.ID == e.Id {
