@@ -112,6 +112,13 @@ func RaftLastIndexKey(rangeID roachpb.RangeID) roachpb.Key {
 	return MakeRangeIDKey(rangeID, localRaftLastIndexSuffix, roachpb.RKey{})
 }
 
+// RangeStartKey returns the key where the given range's start key is stored.
+// This can be used to look up the full range descriptor via
+// RangeDescriptorKey.
+func RangeStartKey(rangeID roachpb.RangeID) roachpb.Key {
+	return MakeRangeIDKey(rangeID, localRangeStartKeySuffix, roachpb.RKey{})
+}
+
 // RangeStatsKey returns the key for accessing the MVCCStats struct
 // for the specified Range ID.
 func RangeStatsKey(rangeID roachpb.RangeID) roachpb.Key {

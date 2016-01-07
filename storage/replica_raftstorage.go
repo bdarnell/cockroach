@@ -497,6 +497,12 @@ func (r *Replica) applySnapshot(snap raftpb.Snapshot) error {
 		}
 	}
 
+	// Record the range's start key.
+	if err := engine.MVCCPut(batch, nil, keys.RangeStartKey(rangeID), roachpb.ZeroTimestamp,
+		roachpb.Value{RawBytes: desc.StartKey}, nil); err != nil {
+		return err
+	}
+
 	// Read the leader lease.
 	lease, err := loadLeaderLease(batch, desc.RangeID)
 	if err != nil {

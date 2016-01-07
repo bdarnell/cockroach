@@ -905,6 +905,10 @@ func (s *Store) BootstrapRange(initialValues []roachpb.KeyValue) error {
 	if err := engine.MVCCPutProto(batch, ms, keys.RangeDescriptorKey(desc.StartKey), now, nil, desc); err != nil {
 		return err
 	}
+	if err := engine.MVCCPut(batch, ms, keys.RangeStartKey(desc.RangeID), roachpb.ZeroTimestamp,
+		roachpb.Value{RawBytes: desc.StartKey}, nil); err != nil {
+		return err
+	}
 	// Verification timestamp.
 	if err := engine.MVCCPutProto(batch, ms, keys.RangeLastVerificationTimestampKey(desc.RangeID), roachpb.ZeroTimestamp, nil, &now); err != nil {
 		return err
@@ -1662,6 +1666,41 @@ func (s *Store) getOrCreateReplicaLocked(groupID roachpb.RangeID, replicaID roac
 		if replicaID != 0 && replicaID < tombstone.NextReplicaID {
 			return nil, errRaftGroupDeleted
 		}
+	}
+
+	snap := s.Engine().NewSnapshot()
+	if val, _, err := engine.MVCCGet(snap, keys.RangeStartKey(groupID), roachpb.ZeroTimestamp, true, nil); err != nil {
+		return nil, err
+	} else if val != nil {
+		// We didn't have a replica object but we do have state on disk.
+		// (The only way this can happen is if replicaGCQueue is
+		// interrupted by a replica being recreated). We must recreate the
+		// replica in the initialized state instead of uninitialized.
+		descKey := keys.RangeDescriptorKey(val.RawBytes)
+		var desc roachpb.RangeDescriptor
+		if ok, err := engine.MVCCGetProto(snap, descKey, roachpb.MaxTimestamp, true, nil, &desc); err != nil {
+			log.Fatalf("error getting proto %s", err)
+			return nil, err
+		} else if !ok {
+			log.Fatalf("found start key %q %q but not range desc", val.RawBytes, descKey)
+			return nil, util.Errorf("found start key on disk but not range descriptor")
+		}
+		r, err := NewReplica(&desc, s)
+		if err != nil {
+			log.Fatalf("failed to create replica %s", err)
+			return nil, err
+		}
+		if err := r.setReplicaID(replicaID); err != nil {
+			log.Fatalf("failed to set replica id %s", err)
+			return nil, err
+		}
+		if err := s.addReplicaInternal(r); err != nil {
+			log.Fatalf("failed to add replica %s", err)
+			return nil, err
+		}
+		s.feed.registerRange(r, false /* scan */)
+		log.Infof("recreated range as initialized")
+		return r, nil
 	}
 
 	var err error

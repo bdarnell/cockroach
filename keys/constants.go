@@ -93,6 +93,8 @@ var (
 	// localRangeLastVerificationTimestampSuffix is the suffix for a range's
 	// last verification timestamp (for checking integrity of on-disk data).
 	localRangeLastVerificationTimestampSuffix = []byte("rlvt")
+	// localRangeStartKeySuffix is the suffix for the range start key.
+	localRangeStartKeySuffix = []byte("strt")
 	// localRangeStatsSuffix is the suffix for range statistics.
 	localRangeStatsSuffix = []byte("stat")
 
