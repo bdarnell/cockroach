@@ -473,10 +473,12 @@ func (r *Replica) applySnapshot(snap raftpb.Snapshot) error {
 
 	rangeID := r.RangeID
 
-	// First, save the HardState.  The HardState must not be changed
-	// because it may record a previous vote cast by this node.
+	// First, save the HardState. The HardState must not be blindly
+	// overwritten because it may record a previous vote cast by this
+	// node.
 	hardStateKey := keys.RaftHardStateKey(rangeID)
-	hardState, _, err := engine.MVCCGet(r.store.Engine(), hardStateKey, roachpb.ZeroTimestamp, true /* consistent */, nil)
+	var oldHardState raftpb.HardState
+	oldHSOK, err := engine.MVCCGetProto(r.store.Engine(), hardStateKey, roachpb.ZeroTimestamp, true /* consistent */, nil, &oldHardState)
 	if err != nil {
 		return err
 	}
@@ -507,14 +509,21 @@ func (r *Replica) applySnapshot(snap raftpb.Snapshot) error {
 		}
 	}
 
-	// Restore the saved HardState.
-	if hardState == nil {
-		err := engine.MVCCDelete(batch, nil, hardStateKey, roachpb.ZeroTimestamp, nil)
-		if err != nil {
-			return err
-		}
-	} else {
-		err := engine.MVCCPut(batch, nil, hardStateKey, roachpb.ZeroTimestamp, *hardState, nil)
+	// Merge the saved HardState with the one we just received.
+	var snapHardState raftpb.HardState
+	snapHSOK, err := engine.MVCCGetProto(batch, hardStateKey, roachpb.ZeroTimestamp, true /* consistent */, nil, &snapHardState)
+	if err != nil {
+		return err
+	}
+	if oldHSOK && snapHSOK {
+		// We mostly want to preserve the original HardState, which
+		// records vote information. However, we must update the Commit
+		// value inorder to preserve invariants between the various index
+		// variables.
+		newHardState := oldHardState
+		newHardState.Commit = snapHardState.Commit
+		log.Infof("CCC merging %s and %s into %s", oldHardState, snapHardState, newHardState)
+		err := engine.MVCCPutProto(batch, nil, hardStateKey, roachpb.ZeroTimestamp, nil, &newHardState)
 		if err != nil {
 			return err
 		}

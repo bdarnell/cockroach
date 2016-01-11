@@ -1074,6 +1074,7 @@ func (r *Replica) handleRaftReady() error {
 			return err
 		}
 		// TODO(bdarnell): update coalesced heartbeat mapping with snapshot info.
+		time.Sleep(time.Second)
 	}
 	if len(rd.Entries) > 0 {
 		if err := r.append(rd.Entries); err != nil {
@@ -1081,6 +1082,13 @@ func (r *Replica) handleRaftReady() error {
 		}
 	}
 	if !raft.IsEmptyHardState(rd.HardState) {
+		if !raft.IsEmptySnap(rd.Snapshot) {
+			hs, _, err := r.InitialState()
+			if err != nil {
+				return err
+			}
+			log.Infof("BBB changing hardstate from %s to %s", hs, rd.HardState)
+		}
 		if err := r.setHardState(rd.HardState); err != nil {
 			return err
 		}
