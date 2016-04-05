@@ -714,6 +714,7 @@ class DBMergeOperator : public rocksdb::MergeOperator {
       const std::deque<std::string>& operand_list,
       std::string* new_value,
       rocksdb::Logger* logger) const {
+      fprintf(stderr, "FullMerge(%zd)\n", operand_list.size());
     // TODO(pmattis): Taken from the old merger code, below are some
     // details about how errors returned by the merge operator are
     // handled. Need to test various error scenarios and decide on
@@ -757,6 +758,7 @@ class DBMergeOperator : public rocksdb::MergeOperator {
       const std::deque<rocksdb::Slice>& operand_list,
       std::string* new_value,
       rocksdb::Logger* logger) const {
+      fprintf(stderr, "PartialMerge(%zd)\n", operand_list.size());
     cockroach::storage::engine::MVCCMetadata meta;
 
     for (int i = 0; i < operand_list.size(); i++) {
@@ -1334,6 +1336,26 @@ DBStatus DBFlush(DBEngine* db) {
   rocksdb::FlushOptions options;
   options.wait = true;
   return ToDBStatus(db->rep->Flush(options));
+}
+
+DBStatus DBCompactRange(DBEngine* db, DBKey* start, DBKey* end) {
+  std::string sbuf;
+  std::string ebuf;
+  rocksdb::Slice s;
+  rocksdb::Slice e;
+  rocksdb::Slice* sPtr = NULL;
+  rocksdb::Slice* ePtr = NULL;
+  if (start != NULL) {
+    sPtr = &s;
+    sbuf = EncodeKey(*start);
+    s = sbuf;
+  }
+  if (end != NULL) {
+    ePtr = &e;
+    ebuf = EncodeKey(*end);
+    e = ebuf;
+  }
+  return ToDBStatus(db->rep->CompactRange(rocksdb::CompactRangeOptions(), sPtr, ePtr));
 }
 
 uint64_t DBApproximateSize(DBEngine* db, DBKey start, DBKey end) {

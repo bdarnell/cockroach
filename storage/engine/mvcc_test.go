@@ -3193,6 +3193,48 @@ func TestResolveIntentWithLowerEpoch(t *testing.T) {
 	}
 }
 
+func TestMVCCMerge(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	stopper := stop.NewStopper()
+	defer stopper.Stop()
+	engine := createTestEngine(stopper)
+
+	// Perform the same sequence of merges on two different keys. For
+	// one of them, insert some compactions which cause partial merges
+	// to be run and affect the results.
+	for i, k := range []roachpb.Key{testKey1, testKey2} {
+		log.Infof("testing key %s", k)
+		if err := MVCCMerge(engine, nil, k, makeTS(0, 1), value1); err != nil {
+			t.Fatal(err)
+		}
+		if err := MVCCMerge(engine, nil, k, makeTS(0, 2), value2); err != nil {
+			t.Fatal(err)
+		}
+
+		if i == 1 {
+			engine.(InMem).CompactRange(MVCCKey{}, MVCCKey{})
+		}
+
+		if err := MVCCMerge(engine, nil, k, makeTS(0, 2), value2); err != nil {
+			t.Fatal(err)
+		}
+		if err := MVCCMerge(engine, nil, k, makeTS(0, 1), value1); err != nil {
+			t.Fatal(err)
+		}
+
+		if i == 1 {
+			engine.(InMem).CompactRange(MVCCKey{}, MVCCKey{})
+		}
+
+		if v, _, err := MVCCGet(engine, k, roachpb.ZeroTimestamp, true, nil); err != nil {
+			t.Fatal(err)
+		} else {
+			log.Infof("value: %s", v)
+		}
+	}
+	t.Error("boom")
+}
+
 func TestWillOverflow(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
