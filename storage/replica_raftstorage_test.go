@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/config"
 	"github.com/cockroachdb/cockroach/keys"
 	"github.com/cockroachdb/cockroach/roachpb"
+	"github.com/cockroachdb/cockroach/storage"
 	"github.com/cockroachdb/cockroach/util/randutil"
 	"github.com/cockroachdb/cockroach/util/tracing"
 )
@@ -58,10 +59,12 @@ func BenchmarkReplicaSnapshot(b *testing.B) {
 		}
 	}
 
+	storage.ProfileStart()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := rep.GetSnapshot(); err != nil {
 			b.Fatal(err)
 		}
 	}
+	storage.ProfileStop()
 }
