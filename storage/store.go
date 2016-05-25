@@ -791,6 +791,9 @@ func (s *Store) Start(stopper *stop.Stopper) error {
 		}
 	}
 
+	if s.Ident.ClusterID == *uuid.EmptyUUID || s.Ident.NodeID == 0 {
+		return util.Errorf("unidentified store: %s", s)
+	}
 	// If the nodeID is 0, it has not be assigned yet.
 	if s.nodeDesc.NodeID != 0 && s.Ident.NodeID != s.nodeDesc.NodeID {
 		return util.Errorf("node id:%d does not equal the one in node descriptor:%d", s.Ident.NodeID, s.nodeDesc.NodeID)

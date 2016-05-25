@@ -30,6 +30,7 @@ import (
 	"github.com/cockroachdb/cockroach/util/hlc"
 	"github.com/cockroachdb/cockroach/util/stop"
 	"github.com/cockroachdb/cockroach/util/tracing"
+	"github.com/cockroachdb/cockroach/util/uuid"
 	"github.com/opentracing/opentracing-go"
 )
 
@@ -105,7 +106,11 @@ func (ltc *LocalTestCluster) Start(t util.Tester, baseCtx *base.Context, initSen
 	ctx.Transport = transport
 	ctx.Tracer = tracer
 	ltc.Store = storage.NewStore(ctx, ltc.Eng, nodeDesc)
-	if err := ltc.Store.Bootstrap(roachpb.StoreIdent{NodeID: nodeID, StoreID: 1}, ltc.Stopper); err != nil {
+	if err := ltc.Store.Bootstrap(roachpb.StoreIdent{
+		ClusterID: uuid.MakeV4(),
+		NodeID:    nodeID,
+		StoreID:   1,
+	}, ltc.Stopper); err != nil {
 		t.Fatalf("unable to start local test cluster: %s", err)
 	}
 	ltc.Stores.AddStore(ltc.Store)

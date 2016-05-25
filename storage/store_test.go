@@ -137,7 +137,11 @@ func createTestStoreWithoutStart(t *testing.T, ctx *StoreContext) (*Store, *hlc.
 	ctx.DB = client.NewDB(sender)
 	store := NewStore(*ctx, eng, &roachpb.NodeDescriptor{NodeID: 1})
 	sender.store = store
-	if err := store.Bootstrap(roachpb.StoreIdent{NodeID: 1, StoreID: 1}, stopper); err != nil {
+	if err := store.Bootstrap(roachpb.StoreIdent{
+		ClusterID: uuid.MakeV4(),
+		NodeID:    1,
+		StoreID:   1,
+	}, stopper); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.BootstrapRange(nil); err != nil {

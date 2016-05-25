@@ -58,6 +58,7 @@ import (
 	"github.com/cockroachdb/cockroach/util/metric"
 	"github.com/cockroachdb/cockroach/util/stop"
 	"github.com/cockroachdb/cockroach/util/tracing"
+	"github.com/cockroachdb/cockroach/util/uuid"
 )
 
 // Check that Stores implements the RangeDescriptorDB interface.
@@ -129,7 +130,11 @@ func createTestStoreWithEngine(t testing.TB, eng engine.Engine, clock *hlc.Clock
 	// TODO(bdarnell): arrange to have the transport closed.
 	store := storage.NewStore(*sCtx, eng, nodeDesc)
 	if bootstrap {
-		if err := store.Bootstrap(roachpb.StoreIdent{NodeID: 1, StoreID: 1}, stopper); err != nil {
+		if err := store.Bootstrap(roachpb.StoreIdent{
+			ClusterID: uuid.MakeV4(),
+			NodeID:    1,
+			StoreID:   1,
+		}, stopper); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -176,6 +181,7 @@ type multiTestContext struct {
 	transportStopper   *stop.Stopper
 	engineStoppers     []*stop.Stopper
 	timeUntilStoreDead time.Duration
+	clusterID          uuid.UUID
 
 	reenableTableSplits func()
 
@@ -234,6 +240,8 @@ func (m *multiTestContext) Start(t *testing.T, numStores int) {
 	if m.clientStopper == nil {
 		m.clientStopper = stop.NewStopper()
 	}
+
+	m.clusterID = uuid.MakeV4()
 
 	for i := 0; i < numStores; i++ {
 		m.addStore()
@@ -532,8 +540,9 @@ func (m *multiTestContext) addStore() {
 	store := storage.NewStore(ctx, eng, &roachpb.NodeDescriptor{NodeID: nodeID})
 	if needBootstrap {
 		err := store.Bootstrap(roachpb.StoreIdent{
-			NodeID:  roachpb.NodeID(idx + 1),
-			StoreID: roachpb.StoreID(idx + 1),
+			ClusterID: m.clusterID,
+			NodeID:    roachpb.NodeID(idx + 1),
+			StoreID:   roachpb.StoreID(idx + 1),
 		}, stopper)
 		if err != nil {
 			m.t.Fatal(err)

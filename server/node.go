@@ -404,9 +404,6 @@ func (n *Node) initStores(engines []engine.Engine, stopper *stop.Stopper) error 
 			}
 			return util.Errorf("failed to start store: %s", err)
 		}
-		if s.Ident.ClusterID == *uuid.EmptyUUID || s.Ident.NodeID == 0 {
-			return util.Errorf("unidentified store: %s", s)
-		}
 		capacity, err := s.Capacity()
 		if err != nil {
 			return util.Errorf("could not query store capacity: %s", err)
