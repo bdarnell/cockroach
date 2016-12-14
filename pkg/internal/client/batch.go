@@ -155,7 +155,7 @@ func (b *Batch) fillResults() error {
 					// this pass.
 					if b.response != nil && offset+k < len(b.response.Responses) {
 						reply = b.response.Responses[offset+k].GetInner()
-					} else if args.Method() != roachpb.EndTransaction {
+					} else if _, ok := args.(*roachpb.EndTransactionRequest); !ok {
 						// TODO(tschottdorf): EndTransaction is special-cased
 						// here because it may be elided (r/o txns). Might
 						// prefer to simulate an EndTransaction response

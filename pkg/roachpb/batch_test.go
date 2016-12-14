@@ -92,10 +92,10 @@ func TestBatchRequestGetArg(t *testing.T) {
 
 	for i, c := range testCases {
 		br := BatchRequest{Requests: c.bu}
-		if _, r := br.GetArg(EndTransaction); r != c.expB {
+		if _, r := br.GetArg(&EndTransactionRequest{}); r != c.expB {
 			t.Errorf("%d: unexpected batch request for %v: %v", i, c.bu, r)
 		}
-		if _, r := br.GetArg(Get); r != c.expG {
+		if _, r := br.GetArg(&GetRequest{}); r != c.expG {
 			t.Errorf("%d: unexpected get match for %v: %v", i, c.bu, r)
 		}
 

@@ -89,7 +89,6 @@ func (ir *intentResolver) processWriteIntentError(
 		log.Infof(ctx, "resolving write intent %s", wiErr)
 	}
 
-	method := args.Method()
 	readOnly := roachpb.IsReadOnly(args) // TODO(tschottdorf): pass as param
 
 	resolveIntents, pushErr := ir.maybePushTransactions(ctx, wiErr.Intents, h, pushType, false)
@@ -105,7 +104,7 @@ func (ir *intentResolver) processWriteIntentError(
 
 	if pushErr != nil {
 		if log.V(1) {
-			log.Infof(ctx, "on %s: %s", method, pushErr)
+			log.Infof(ctx, "on %T: %s", args, pushErr)
 		}
 
 		if _, isExpected := pushErr.GetDetail().(*roachpb.TransactionPushError); !isExpected {
@@ -299,7 +298,7 @@ func (ir *intentResolver) processIntents(
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, base.NetworkTimeout)
 	defer cancel()
 
-	if item.args.Method() != roachpb.EndTransaction {
+	if _, ok := item.args.(*roachpb.EndTransactionRequest); !ok {
 		h := roachpb.Header{Timestamp: now}
 		resolveIntents, pushErr := ir.maybePushTransactions(ctxWithTimeout,
 			item.intents, h, roachpb.PUSH_TOUCH, true /* skipInFlight */)

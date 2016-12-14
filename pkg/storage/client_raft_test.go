@@ -1982,7 +1982,7 @@ func (ncc *noConfChangeTestHandler) HandleRaftRequest(
 				panic(err)
 			}
 			if command.BatchRequest.RangeID == ncc.rangeID {
-				if ba, ok := command.BatchRequest.GetArg(roachpb.EndTransaction); ok {
+				if ba, ok := command.BatchRequest.GetArg(&roachpb.EndTransactionRequest{}); ok {
 					et := ba.(*roachpb.EndTransactionRequest)
 					if crt := et.InternalCommitTrigger.GetChangeReplicasTrigger(); crt != nil {
 						// We found a configuration change headed for our victim range;

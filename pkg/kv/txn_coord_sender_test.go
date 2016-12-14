@@ -582,7 +582,7 @@ func TestTxnCoordSenderCancel(t *testing.T) {
 	origSender := sender.wrapped
 	sender.wrapped = client.SenderFunc(
 		func(ctx context.Context, args roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
-			if _, hasET := args.GetArg(roachpb.EndTransaction); hasET {
+			if _, hasET := args.GetArg(&roachpb.EndTransactionRequest{}); hasET {
 				// Cancel the transaction while also sending it along. This tickled a
 				// data race in TxnCoordSender.tryAsyncAbort. See #7726.
 				cancel()
@@ -1073,7 +1073,7 @@ func TestTxnCoordSenderNoDuplicateIntents(t *testing.T) {
 
 	senderFunc := func(_ context.Context, ba roachpb.BatchRequest) (
 		*roachpb.BatchResponse, *roachpb.Error) {
-		if rArgs, ok := ba.GetArg(roachpb.EndTransaction); ok {
+		if rArgs, ok := ba.GetArg(&roachpb.EndTransactionRequest{}); ok {
 			et := rArgs.(*roachpb.EndTransactionRequest)
 			if !reflect.DeepEqual(et.IntentSpans, expectedIntents) {
 				t.Errorf("Invalid intents: %+v; expected %+v", et.IntentSpans, expectedIntents)

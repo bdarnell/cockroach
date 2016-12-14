@@ -57,7 +57,7 @@ func TestAmbiguousCommitDueToLeadershipChange(t *testing.T) {
 	// link.
 	params.Knobs.Store = &storage.StoreTestingKnobs{
 		TestingResponseFilter: func(ba roachpb.BatchRequest, br *roachpb.BatchResponse) *roachpb.Error {
-			req, ok := ba.GetArg(roachpb.ConditionalPut)
+			req, ok := ba.GetArg(&roachpb.ConditionalPutRequest{})
 			tsk := tableStartKey.Load()
 			if tsk == nil {
 				return nil

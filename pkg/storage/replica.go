@@ -114,53 +114,41 @@ const (
 	raftInitialLogTerm  = 5
 )
 
-// consultsTimestampCacheMethods specifies the set of methods which
-// consult the timestamp cache. This syntax creates a sparse array
-// with maximum index equal to the value of the final Method. Unused
-// indexes default to false.
-var consultsTimestampCacheMethods = [...]bool{
-	roachpb.Put:              true,
-	roachpb.ConditionalPut:   true,
-	roachpb.Increment:        true,
-	roachpb.Delete:           true,
-	roachpb.DeleteRange:      true,
-	roachpb.BeginTransaction: true,
-}
-
 func consultsTimestampCache(r roachpb.Request) bool {
-	m := r.Method()
-	if m < 0 || m >= roachpb.Method(len(consultsTimestampCacheMethods)) {
+	switch r.(type) {
+	case *roachpb.PutRequest:
+	case *roachpb.ConditionalPutRequest:
+	case *roachpb.IncrementRequest:
+	case *roachpb.DeleteRequest:
+	case *roachpb.DeleteRangeRequest:
+	case *roachpb.BeginTransactionRequest:
+	default:
 		return false
 	}
-	return consultsTimestampCacheMethods[m]
-}
-
-// updatesTimestampCacheMethods specifies the set of methods which if
-// successful will update the timestamp cache.
-var updatesTimestampCacheMethods = [...]bool{
-	roachpb.Get: true,
-	// ConditionalPut effectively reads and may not write, so must
-	// update the timestamp cache.
-	roachpb.ConditionalPut: true,
-	// DeleteRange updates the write timestamp cache as it doesn't leave
-	// intents or tombstones for keys which don't yet exist. By updating
-	// the write timestamp cache, it forces subsequent writes to get a
-	// write-too-old error and avoids the phantom delete anomaly.
-	roachpb.DeleteRange: true,
-	roachpb.Scan:        true,
-	roachpb.ReverseScan: true,
-	// EndTransaction updates the write timestamp cache to prevent
-	// replays. Replays for the same transaction key and timestamp will
-	// have Txn.WriteTooOld=true and must retry on EndTransaction.
-	roachpb.EndTransaction: true,
+	return true
 }
 
 func updatesTimestampCache(r roachpb.Request) bool {
-	m := r.Method()
-	if m < 0 || m >= roachpb.Method(len(updatesTimestampCacheMethods)) {
+	switch r.(type) {
+	case *roachpb.GetRequest:
+	// ConditionalPut effectively reads and may not write, so must
+	// update the timestamp cache.
+	case *roachpb.ConditionalPutRequest:
+		// DeleteRange updates the write timestamp cache as it doesn't leave
+		// intents or tombstones for keys which don't yet exist. By updating
+		// the write timestamp cache, it forces subsequent writes to get a
+		// write-too-old error and avoids the phantom delete anomaly.
+	case *roachpb.DeleteRangeRequest:
+	case *roachpb.ScanRequest:
+	case *roachpb.ReverseScanRequest:
+		// EndTransaction updates the write timestamp cache to prevent
+		// replays. Replays for the same transaction key and timestamp will
+		// have Txn.WriteTooOld=true and must retry on EndTransaction.
+	case *roachpb.EndTransactionRequest:
+	default:
 		return false
 	}
-	return updatesTimestampCacheMethods[m]
+	return true
 }
 
 type proposalRetryReason int
@@ -1857,7 +1845,7 @@ func (r *Replica) addWriteCmd(
 		if pErr != nil {
 			// If this isn't an end transaction with commit=true, return
 			// error without further ado.
-			if etArg, ok := ba.GetArg(roachpb.EndTransaction); !ok ||
+			if etArg, ok := ba.GetArg(&roachpb.EndTransactionRequest{}); !ok ||
 				!etArg.(*roachpb.EndTransactionRequest).Commit {
 				return nil, pErr
 			}
@@ -2321,7 +2309,7 @@ func defaultSubmitProposalLocked(r *Replica, p *ProposalData) error {
 	if p.command.ReplicatedEvalResult != nil {
 		changeReplicas = p.command.ReplicatedEvalResult.ChangeReplicas
 	} else {
-		if union, ok := p.Request.GetArg(roachpb.EndTransaction); ok {
+		if union, ok := p.Request.GetArg(&roachpb.EndTransactionRequest{}); ok {
 			ict := union.(*roachpb.EndTransactionRequest).InternalCommitTrigger
 			if tr := ict.GetChangeReplicasTrigger(); tr != nil {
 				changeReplicas = &storagebase.ChangeReplicas{
@@ -3484,7 +3472,7 @@ func (r *Replica) maybeAcquireSplitMergeLock(
 		split = raftCmd.ReplicatedEvalResult.Split
 		merge = raftCmd.ReplicatedEvalResult.Merge
 	} else {
-		if union, ok := raftCmd.BatchRequest.GetArg(roachpb.EndTransaction); ok {
+		if union, ok := raftCmd.BatchRequest.GetArg(&roachpb.EndTransactionRequest{}); ok {
 			ict := union.(*roachpb.EndTransactionRequest).InternalCommitTrigger
 			if tr := ict.GetSplitTrigger(); tr != nil {
 				split = &storagebase.Split{
@@ -3811,7 +3799,7 @@ func (r *Replica) executeWriteBatch(
 		clonedTxn.Status = roachpb.COMMITTED
 
 		// If the end transaction is not committed, clear the batch and mark the status aborted.
-		arg, _ := ba.GetArg(roachpb.EndTransaction)
+		arg, _ := ba.GetArg(&roachpb.EndTransactionRequest{})
 		etArg := arg.(*roachpb.EndTransactionRequest)
 		if !etArg.Commit {
 			clonedTxn.Status = roachpb.ABORTED
@@ -3854,10 +3842,10 @@ func isOnePhaseCommit(ba roachpb.BatchRequest) bool {
 	if ba.Txn == nil || isEndTransactionTriggeringRetryError(ba.Txn, ba.Txn) {
 		return false
 	}
-	if _, hasBegin := ba.GetArg(roachpb.BeginTransaction); !hasBegin {
+	if _, hasBegin := ba.GetArg(&roachpb.BeginTransactionRequest{}); !hasBegin {
 		return false
 	}
-	arg, hasEnd := ba.GetArg(roachpb.EndTransaction)
+	arg, hasEnd := ba.GetArg(&roachpb.EndTransactionRequest{})
 	if !hasEnd {
 		return false
 	}

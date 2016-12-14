@@ -311,7 +311,7 @@ func (tc *TxnCoordSender) Send(
 		var hasET bool
 		{
 			var rArgs roachpb.Request
-			rArgs, hasET = ba.GetArg(roachpb.EndTransaction)
+			rArgs, hasET = ba.GetArg(&roachpb.EndTransactionRequest{})
 			if hasET {
 				et = rArgs.(*roachpb.EndTransactionRequest)
 				if len(et.Key) != 0 {
@@ -432,7 +432,7 @@ func (tc *TxnCoordSender) Send(
 		return br, nil
 	}
 
-	if _, ok := ba.GetArg(roachpb.EndTransaction); !ok {
+	if _, ok := ba.GetArg(&roachpb.EndTransactionRequest{}); !ok {
 		return br, nil
 	}
 	// If the --linearizable flag is set, we want to make sure that
@@ -903,7 +903,7 @@ func (tc *TxnCoordSender) updateState(
 			// the coordinator - the transaction has laid down intents, so
 			// we expect it to be committed/aborted at some point in the
 			// future.
-			if _, isEnding := ba.GetArg(roachpb.EndTransaction); pErr != nil || !isEnding {
+			if _, isEnding := ba.GetArg(&roachpb.EndTransactionRequest{}); pErr != nil || !isEnding {
 				log.Event(ctx, "coordinator spawns")
 				txnMeta = &txnMetadata{
 					txn:              newTxn,

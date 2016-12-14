@@ -79,7 +79,7 @@ func TestBatchRequestString(t *testing.T) {
 	}
 	br.Requests = append(br.Requests, roachpb.RequestUnion{EndTransaction: &roachpb.EndTransactionRequest{}})
 
-	e := `[txn: <nil>], Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), ... 76 skipped ..., Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), Get [/Min,/Min), EndTransaction [/Min,/Min)`
+	e := `[txn: <nil>], *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), ... 76 skipped ..., *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.GetRequest [/Min,/Min), *roachpb.EndTransactionRequest [/Min,/Min)`
 	if e != br.String() {
 		t.Fatalf("e = %s, v = %s", e, br.String())
 	}

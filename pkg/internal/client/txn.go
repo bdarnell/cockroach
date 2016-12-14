@@ -667,7 +667,7 @@ func (txn *Txn) send(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.
 		args := ru.GetInner()
 		if i < lastIndex {
 			if _, ok := args.(*roachpb.EndTransactionRequest); ok {
-				return nil, roachpb.NewErrorf("%s sent as non-terminal call", args.Method())
+				return nil, roachpb.NewErrorf("%T sent as non-terminal call", args)
 			}
 		}
 		if roachpb.IsTransactionWrite(args) && firstWriteIndex == -1 {

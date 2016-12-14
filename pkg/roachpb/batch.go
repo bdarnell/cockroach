@@ -19,6 +19,7 @@ package roachpb
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -71,8 +72,8 @@ func (ba *BatchRequest) IsConsistencyRelated() bool {
 	if !ba.IsSingleRequest() {
 		return false
 	}
-	_, ok1 := ba.GetArg(ComputeChecksum)
-	_, ok2 := ba.GetArg(CheckConsistency)
+	_, ok1 := ba.GetArg(&ComputeChecksumRequest{})
+	_, ok2 := ba.GetArg(&CheckConsistencyRequest{})
 	return ok1 || ok2
 }
 
@@ -81,7 +82,7 @@ func (ba *BatchRequest) IsFreeze() bool {
 	if !ba.IsSingleRequest() {
 		return false
 	}
-	_, ok := ba.GetArg(ChangeFrozen)
+	_, ok := ba.GetArg(&ChangeFrozenRequest{})
 	return ok
 }
 
@@ -93,7 +94,7 @@ func (ba *BatchRequest) IsLeaseRequest() bool {
 	if !ba.IsSingleRequest() {
 		return false
 	}
-	_, ok := ba.GetArg(RequestLease)
+	_, ok := ba.GetArg(&RequestLeaseRequest{})
 	return ok
 }
 
@@ -171,19 +172,21 @@ func (ba *BatchRequest) hasFlag(flag int) bool {
 // GetArg returns a request of the given type if one is contained in the
 // Batch. The request returned is the first of its kind, with the exception
 // of EndTransaction, where it examines the very last request only.
-func (ba *BatchRequest) GetArg(method Method) (Request, bool) {
+func (ba *BatchRequest) GetArg(reqType Request) (Request, bool) {
 	// when looking for EndTransaction, just look at the last entry.
-	if method == EndTransaction {
+	if _, ok := reqType.(*EndTransactionRequest); ok {
 		if length := len(ba.Requests); length > 0 {
-			if req := ba.Requests[length-1].GetInner(); req.Method() == EndTransaction {
+			req := ba.Requests[length-1].GetInner()
+			if _, ok := req.(*EndTransactionRequest); ok {
 				return req, true
 			}
 		}
 		return nil, false
 	}
 
+	typ := reflect.TypeOf(reqType)
 	for _, arg := range ba.Requests {
-		if req := arg.GetInner(); req.Method() == method {
+		if req := arg.GetInner(); reflect.TypeOf(req) == typ {
 			return req, true
 		}
 	}
@@ -279,15 +282,6 @@ func (br *BatchResponse) Add(reply Response) {
 	br.Responses[len(br.Responses)-1].MustSetInner(reply)
 }
 
-// Methods returns a slice of the contained methods.
-func (ba *BatchRequest) Methods() []Method {
-	var res []Method
-	for _, arg := range ba.Requests {
-		res = append(res, arg.GetInner().Method())
-	}
-	return res
-}
-
 // Split separates the requests contained in a batch so that each subset of
 // requests can be executed by a Store (without changing order). In particular,
 // Admin requests are always singled out and mutating requests separated from
@@ -297,9 +291,9 @@ func (ba *BatchRequest) Methods() []Method {
 // sending a whole transaction in a single Batch when addressing a single
 // range.
 func (ba BatchRequest) Split(canSplitET bool) [][]RequestUnion {
-	compatible := func(method Method, exFlags, newFlags int) bool {
+	compatible := func(isET bool, exFlags, newFlags int) bool {
 		// If no flags are set so far, everything goes.
-		if exFlags == 0 || (!canSplitET && method == EndTransaction) {
+		if exFlags == 0 || (!canSplitET && isET) {
 			return true
 		}
 		if (newFlags & isAlone) != 0 {
@@ -322,12 +316,12 @@ func (ba BatchRequest) Split(canSplitET bool) [][]RequestUnion {
 		for i, union := range ba.Requests {
 			args := union.GetInner()
 			flags := args.flags()
-			method := args.Method()
 			// Regardless of flags, a NoopRequest is always compatible.
-			if method == Noop {
+			if _, ok := args.(*NoopRequest); ok {
 				continue
 			}
-			if !compatible(method, gFlags, flags) {
+			_, isET := args.(*EndTransactionRequest)
+			if !compatible(isET, gFlags, flags) {
 				part = ba.Requests[:i]
 				break
 			}
@@ -358,10 +352,12 @@ func (ba BatchRequest) String() string {
 		}
 		req := arg.GetInner()
 		if _, ok := req.(*NoopRequest); ok {
-			str = append(str, req.Method().String())
+			str = append(str, "Noop")
 		} else {
 			h := req.Header()
-			str = append(str, fmt.Sprintf("%s [%s,%s)", req.Method(), h.Key, h.EndKey))
+			// TODO(bdarnell): %T is too verbose here; either replace String() with Summary()
+			// or have it use the same command shorthands.
+			str = append(str, fmt.Sprintf("%T [%s,%s)", req, h.Key, h.EndKey))
 		}
 	}
 	return strings.Join(str, ", ")

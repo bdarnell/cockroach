@@ -757,9 +757,11 @@ func (ds *DistSender) divideAndSendBatchToRanges(
 			// If the request is more than but ends with EndTransaction, we
 			// want the caller to come again with the EndTransaction in an
 			// extra call.
-			if l := len(ba.Requests) - 1; l > 0 && ba.Requests[l].GetInner().Method() == roachpb.EndTransaction {
-				responseCh <- response{pErr: errNo1PCTxn}
-				return
+			if l := len(ba.Requests) - 1; l > 0 {
+				if _, ok := ba.Requests[l].GetInner().(*roachpb.EndTransactionRequest); ok {
+					responseCh <- response{pErr: errNo1PCTxn}
+					return
+				}
 			}
 		}
 
@@ -1116,7 +1118,7 @@ func (ds *DistSender) sendToReplicas(
 	var haveCommit bool
 	// We only check for committed txns, not aborts because aborts may
 	// be retried without any risk of inconsistencies.
-	if etArg, ok := args.GetArg(roachpb.EndTransaction); ok &&
+	if etArg, ok := args.GetArg(&roachpb.EndTransactionRequest{}); ok &&
 		etArg.(*roachpb.EndTransactionRequest).Commit {
 		haveCommit = true
 	}

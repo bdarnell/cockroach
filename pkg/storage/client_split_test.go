@@ -1129,10 +1129,11 @@ func TestStoreSplitTimestampCacheReadRace(t *testing.T) {
 				if !storage.ProposerEvaluatedKVEnabled() {
 					close(getContinues)
 				}
-			} else if filterArgs.Req.Method() == roachpb.Get &&
-				bytes.HasPrefix(filterArgs.Req.Header().Key, splitKey.Next()) {
-				getStarted.Done()
-				<-getContinues
+			} else if _, ok := filterArgs.Req.(*roachpb.GetRequest); ok {
+				if bytes.HasPrefix(filterArgs.Req.Header().Key, splitKey.Next()) {
+					getStarted.Done()
+					<-getContinues
+				}
 			}
 			return nil
 		}
@@ -1673,11 +1674,12 @@ func TestStoreSplitBeginTxnPushMetaIntentRace(t *testing.T) {
 			if log.V(1) {
 				log.Infof(context.TODO(), "allowing BeginTransaction to proceed after 20ms")
 			}
-		} else if filterArgs.Req.Method() == roachpb.Put &&
-			filterArgs.Req.Header().Key.Equal(keys.RangeMetaKey(splitKey)) {
-			select {
-			case wroteMeta2 <- struct{}{}:
-			default:
+		} else if _, ok := filterArgs.Req.(*roachpb.PutRequest); ok {
+			if filterArgs.Req.Header().Key.Equal(keys.RangeMetaKey(splitKey)) {
+				select {
+				case wroteMeta2 <- struct{}{}:
+				default:
+				}
 			}
 		}
 		return nil

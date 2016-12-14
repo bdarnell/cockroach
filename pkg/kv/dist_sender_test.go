@@ -747,7 +747,7 @@ func TestRetryOnWrongReplicaError(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := ba.GetArg(roachpb.RangeLookup); ok {
+		if _, ok := ba.GetArg(&roachpb.RangeLookupRequest{}); ok {
 			if bytes.HasPrefix(rs.Key, keys.Meta1Prefix) {
 				br := &roachpb.BatchResponse{}
 				r := &roachpb.RangeLookupResponse{}
@@ -825,7 +825,7 @@ func TestRetryOnWrongReplicaErrorWithSuggestion(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := ba.GetArg(roachpb.RangeLookup); ok {
+		if _, ok := ba.GetArg(&roachpb.RangeLookupRequest{}); ok {
 			if bytes.HasPrefix(rs.Key, keys.Meta1Prefix) {
 				br := &roachpb.BatchResponse{}
 				r := &roachpb.RangeLookupResponse{}
@@ -1575,14 +1575,15 @@ func TestSequenceUpdateOnMultiRangeQueryLoop(t *testing.T) {
 
 type batchMethods struct {
 	sequence int32
-	methods  []roachpb.Method
+	requests []roachpb.Request
 }
 type batchMethodsSlice []batchMethods
 
 func (s batchMethodsSlice) Len() int      { return len(s) }
 func (s batchMethodsSlice) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 func (s batchMethodsSlice) Less(i, j int) bool {
-	return s[i].sequence < s[j].sequence && s[i].methods[0] != roachpb.EndTransaction
+	_, isIEndTransaction := s[i].requests[0].(*roachpb.EndTransactionRequest)
+	return s[i].sequence < s[j].sequence && !isIEndTransaction
 }
 
 // TestMultiRangeSplitEndTransaction verifies that when a chunk of
@@ -1596,17 +1597,22 @@ func TestMultiRangeSplitEndTransaction(t *testing.T) {
 	g, clock := makeGossip(t, stopper)
 	testCases := []struct {
 		put1, put2, et roachpb.Key
-		exp            [][]roachpb.Method
+		exp            [][]roachpb.Request
 	}{
 		{
 			// Everything hits the first range, so we get a 1PC txn.
 			roachpb.Key("a1"), roachpb.Key("a2"), roachpb.Key("a3"),
-			[][]roachpb.Method{{roachpb.Put, roachpb.Put, roachpb.EndTransaction}},
+			[][]roachpb.Request{
+				{&roachpb.PutRequest{}, &roachpb.PutRequest{}, &roachpb.EndTransactionRequest{}},
+			},
 		},
 		{
 			// Only EndTransaction hits the second range.
 			roachpb.Key("a1"), roachpb.Key("a2"), roachpb.Key("b"),
-			[][]roachpb.Method{{roachpb.Put, roachpb.Put}, {roachpb.EndTransaction}},
+			[][]roachpb.Request{
+				{&roachpb.PutRequest{}, &roachpb.PutRequest{}},
+				{&roachpb.EndTransactionRequest{}},
+			},
 		},
 		{
 			// One write hits the second range, so EndTransaction has to be split off.
@@ -1614,12 +1620,19 @@ func TestMultiRangeSplitEndTransaction(t *testing.T) {
 			// would actually be fine, but it doesn't seem worth optimizing at
 			// this point.
 			roachpb.Key("a1"), roachpb.Key("b1"), roachpb.Key("a1"),
-			[][]roachpb.Method{{roachpb.Put, roachpb.Noop}, {roachpb.Noop, roachpb.Put}, {roachpb.EndTransaction}},
+			[][]roachpb.Request{
+				{&roachpb.PutRequest{}, &roachpb.NoopRequest{}},
+				{&roachpb.NoopRequest{}, &roachpb.PutRequest{}},
+				{&roachpb.EndTransactionRequest{}},
+			},
 		},
 		{
 			// Both writes go to the second range, but not EndTransaction.
 			roachpb.Key("b1"), roachpb.Key("b2"), roachpb.Key("a1"),
-			[][]roachpb.Method{{roachpb.Put, roachpb.Put}, {roachpb.EndTransaction}},
+			[][]roachpb.Request{
+				{&roachpb.PutRequest{}, &roachpb.PutRequest{}},
+				{&roachpb.EndTransactionRequest{}},
+			},
 		},
 	}
 
@@ -1673,12 +1686,12 @@ func TestMultiRangeSplitEndTransaction(t *testing.T) {
 		var mu syncutil.Mutex
 		act := batchMethodsSlice{}
 		var testFn rpcSendFn = func(_ SendOptions, _ ReplicaSlice, ba roachpb.BatchRequest, _ *rpc.Context) (*roachpb.BatchResponse, error) {
-			var cur []roachpb.Method
+			var cur []roachpb.Request
 			for _, union := range ba.Requests {
-				cur = append(cur, union.GetInner().Method())
+				cur = append(cur, union.GetInner())
 			}
 			mu.Lock()
-			act = append(act, batchMethods{sequence: ba.Txn.Sequence, methods: cur})
+			act = append(act, batchMethods{sequence: ba.Txn.Sequence, requests: cur})
 			mu.Unlock()
 			return ba.CreateReply(), nil
 		}
@@ -1705,8 +1718,16 @@ func TestMultiRangeSplitEndTransaction(t *testing.T) {
 
 		sort.Sort(act)
 		for j, batchMethods := range act {
-			if !reflect.DeepEqual(test.exp[j], batchMethods.methods) {
-				t.Fatalf("test %d: expected [%d] %v, got %v", i, j, test.exp[j], batchMethods.methods)
+			expTypes := []reflect.Type{}
+			for _, req := range test.exp[j] {
+				expTypes = append(expTypes, reflect.TypeOf(req))
+			}
+			actualTypes := []reflect.Type{}
+			for _, req := range batchMethods.requests {
+				actualTypes = append(actualTypes, reflect.TypeOf(req))
+			}
+			if !reflect.DeepEqual(expTypes, actualTypes) {
+				t.Fatalf("test %d: expected [%d] %v, got %v", i, j, expTypes, actualTypes)
 			}
 		}
 	}

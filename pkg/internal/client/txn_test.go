@@ -123,7 +123,7 @@ func newTestSender(
 				writing = true
 			}
 		}
-		if args, ok := ba.GetArg(roachpb.EndTransaction); ok {
+		if args, ok := ba.GetArg(&roachpb.EndTransactionRequest{}); ok {
 			et := args.(*roachpb.EndTransactionRequest)
 			writing = true
 			if et.Commit {
@@ -259,9 +259,11 @@ func TestTransactionConfig(t *testing.T) {
 // operations were performed.
 func TestCommitReadOnlyTransaction(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	var calls []roachpb.Method
+	var calls []reflect.Type
 	db := NewDB(newTestSender(func(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
-		calls = append(calls, ba.Methods()...)
+		for _, req := range ba.Requests {
+			calls = append(calls, reflect.TypeOf(req.GetInner()))
+		}
 		return ba.CreateReply(), nil
 	}, nil))
 	if err := db.Txn(context.TODO(), func(txn *Txn) error {
@@ -270,7 +272,7 @@ func TestCommitReadOnlyTransaction(t *testing.T) {
 	}); err != nil {
 		t.Errorf("unexpected error on commit: %s", err)
 	}
-	expectedCalls := []roachpb.Method{roachpb.Get}
+	expectedCalls := []reflect.Type{reflect.TypeOf(&roachpb.GetRequest{})}
 	if !reflect.DeepEqual(expectedCalls, calls) {
 		t.Errorf("expected %s, got %s", expectedCalls, calls)
 	}
@@ -282,9 +284,11 @@ func TestCommitReadOnlyTransaction(t *testing.T) {
 func TestCommitReadOnlyTransactionExplicit(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	for _, withGet := range []bool{true, false} {
-		var calls []roachpb.Method
+		var calls []reflect.Type
 		db := NewDB(newTestSender(func(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
-			calls = append(calls, ba.Methods()...)
+			for _, req := range ba.Requests {
+				calls = append(calls, reflect.TypeOf(req.GetInner()))
+			}
 			return ba.CreateReply(), nil
 		}, nil))
 		if err := db.Txn(context.TODO(), func(txn *Txn) error {
@@ -296,9 +300,9 @@ func TestCommitReadOnlyTransactionExplicit(t *testing.T) {
 		}); err != nil {
 			t.Errorf("unexpected error on commit: %s", err)
 		}
-		expectedCalls := []roachpb.Method(nil)
+		expectedCalls := []reflect.Type(nil)
 		if withGet {
-			expectedCalls = append(expectedCalls, roachpb.Get)
+			expectedCalls = append(expectedCalls, reflect.TypeOf(&roachpb.GetRequest{}))
 		}
 		if !reflect.DeepEqual(expectedCalls, calls) {
 			t.Errorf("expected %s, got %s", expectedCalls, calls)
@@ -311,13 +315,15 @@ func TestCommitReadOnlyTransactionExplicit(t *testing.T) {
 func TestCommitMutatingTransaction(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
-	var calls []roachpb.Method
+	var calls []reflect.Type
 	db := NewDB(newTestSender(func(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
-		calls = append(calls, ba.Methods()...)
-		if bt, ok := ba.GetArg(roachpb.BeginTransaction); ok && !bt.Header().Key.Equal(roachpb.Key("a")) {
+		for _, req := range ba.Requests {
+			calls = append(calls, reflect.TypeOf(req.GetInner()))
+		}
+		if bt, ok := ba.GetArg(&roachpb.BeginTransactionRequest{}); ok && !bt.Header().Key.Equal(roachpb.Key("a")) {
 			t.Errorf("expected begin transaction key to be \"a\"; got %s", bt.Header().Key)
 		}
-		if et, ok := ba.GetArg(roachpb.EndTransaction); ok && !et.(*roachpb.EndTransactionRequest).Commit {
+		if et, ok := ba.GetArg(&roachpb.EndTransactionRequest{}); ok && !et.(*roachpb.EndTransactionRequest).Commit {
 			t.Errorf("expected commit to be true")
 		}
 		return ba.CreateReply(), nil
@@ -325,26 +331,30 @@ func TestCommitMutatingTransaction(t *testing.T) {
 
 	// Test all transactional write methods.
 	testArgs := []struct {
-		f         func(txn *Txn) error
-		expMethod roachpb.Method
+		f       func(txn *Txn) error
+		expType roachpb.Request
 	}{
-		{func(txn *Txn) error { return txn.Put("a", "b") }, roachpb.Put},
-		{func(txn *Txn) error { return txn.CPut("a", "b", nil) }, roachpb.ConditionalPut},
+		{func(txn *Txn) error { return txn.Put("a", "b") }, &roachpb.PutRequest{}},
+		{func(txn *Txn) error { return txn.CPut("a", "b", nil) }, &roachpb.ConditionalPutRequest{}},
 		{func(txn *Txn) error {
 			_, err := txn.Inc("a", 1)
 			return err
-		}, roachpb.Increment},
-		{func(txn *Txn) error { return txn.Del("a") }, roachpb.Delete},
-		{func(txn *Txn) error { return txn.DelRange("a", "b") }, roachpb.DeleteRange},
+		}, &roachpb.IncrementRequest{}},
+		{func(txn *Txn) error { return txn.Del("a") }, &roachpb.DeleteRequest{}},
+		{func(txn *Txn) error { return txn.DelRange("a", "b") }, &roachpb.DeleteRangeRequest{}},
 	}
 	for i, test := range testArgs {
-		calls = []roachpb.Method{}
+		calls = []reflect.Type{}
 		if err := db.Txn(context.TODO(), func(txn *Txn) error {
 			return test.f(txn)
 		}); err != nil {
 			t.Errorf("%d: unexpected error on commit: %s", i, err)
 		}
-		expectedCalls := []roachpb.Method{roachpb.BeginTransaction, test.expMethod, roachpb.EndTransaction}
+		expectedCalls := []reflect.Type{
+			reflect.TypeOf(&roachpb.BeginTransactionRequest{}),
+			reflect.TypeOf(test.expType),
+			reflect.TypeOf(&roachpb.EndTransactionRequest{}),
+		}
 		if !reflect.DeepEqual(expectedCalls, calls) {
 			t.Errorf("%d: expected %s, got %s", i, expectedCalls, calls)
 		}
@@ -355,9 +365,11 @@ func TestCommitMutatingTransaction(t *testing.T) {
 // request is inserted just before the first mutating command.
 func TestTxnInsertBeginTransaction(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	var calls []roachpb.Method
+	var calls []reflect.Type
 	db := NewDB(newTestSender(func(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
-		calls = append(calls, ba.Methods()...)
+		for _, req := range ba.Requests {
+			calls = append(calls, reflect.TypeOf(req.GetInner()))
+		}
 		return ba.CreateReply(), nil
 	}, nil))
 	if err := db.Txn(context.TODO(), func(txn *Txn) error {
@@ -368,7 +380,12 @@ func TestTxnInsertBeginTransaction(t *testing.T) {
 	}); err != nil {
 		t.Errorf("unexpected error on commit: %s", err)
 	}
-	expectedCalls := []roachpb.Method{roachpb.Get, roachpb.BeginTransaction, roachpb.Put, roachpb.EndTransaction}
+	expectedCalls := []reflect.Type{
+		reflect.TypeOf(&roachpb.GetRequest{}),
+		reflect.TypeOf(&roachpb.BeginTransactionRequest{}),
+		reflect.TypeOf(&roachpb.PutRequest{}),
+		reflect.TypeOf(&roachpb.EndTransactionRequest{}),
+	}
 	if !reflect.DeepEqual(expectedCalls, calls) {
 		t.Errorf("expected %s, got %s", expectedCalls, calls)
 	}
@@ -426,7 +443,7 @@ func TestCommitTransactionOnce(t *testing.T) {
 func TestAbortReadOnlyTransaction(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	db := NewDB(newTestSender(func(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
-		if _, ok := ba.GetArg(roachpb.EndTransaction); ok {
+		if _, ok := ba.GetArg(&roachpb.EndTransactionRequest{}); ok {
 			t.Errorf("did not expect EndTransaction")
 		}
 		return ba.CreateReply(), nil
@@ -446,10 +463,16 @@ func TestAbortReadOnlyTransaction(t *testing.T) {
 func TestEndWriteRestartReadOnlyTransaction(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	for _, success := range []bool{true, false} {
-		expCalls := []roachpb.Method{roachpb.BeginTransaction, roachpb.Put, roachpb.EndTransaction}
-		var calls []roachpb.Method
+		expCalls := []reflect.Type{
+			reflect.TypeOf(&roachpb.BeginTransactionRequest{}),
+			reflect.TypeOf(&roachpb.PutRequest{}),
+			reflect.TypeOf(&roachpb.EndTransactionRequest{}),
+		}
+		var calls []reflect.Type
 		db := NewDB(newTestSender(func(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
-			calls = append(calls, ba.Methods()...)
+			for _, req := range ba.Requests {
+				calls = append(calls, reflect.TypeOf(req.GetInner()))
+			}
 			return ba.CreateReply(), nil
 		}, nil))
 		ok := false
@@ -483,7 +506,7 @@ func TestTransactionKeyNotChangedInRestart(t *testing.T) {
 	tries := 0
 	db := NewDB(newTestSender(nil, func(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
 		var bt *roachpb.BeginTransactionRequest
-		if args, ok := ba.GetArg(roachpb.BeginTransaction); ok {
+		if args, ok := ba.GetArg(&roachpb.BeginTransactionRequest{}); ok {
 			bt = args.(*roachpb.BeginTransactionRequest)
 		} else {
 			t.Fatal("failed to find a begin transaction request")
@@ -529,10 +552,12 @@ func TestTransactionKeyNotChangedInRestart(t *testing.T) {
 // upon failed invocation of the retryable func.
 func TestAbortMutatingTransaction(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	var calls []roachpb.Method
+	var calls []reflect.Type
 	db := NewDB(newTestSender(func(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
-		calls = append(calls, ba.Methods()...)
-		if et, ok := ba.GetArg(roachpb.EndTransaction); ok && et.(*roachpb.EndTransactionRequest).Commit {
+		for _, req := range ba.Requests {
+			calls = append(calls, reflect.TypeOf(req.GetInner()))
+		}
+		if et, ok := ba.GetArg(&roachpb.EndTransactionRequest{}); ok && et.(*roachpb.EndTransactionRequest).Commit {
 			t.Errorf("expected commit to be false")
 		}
 		return ba.CreateReply(), nil
@@ -546,7 +571,11 @@ func TestAbortMutatingTransaction(t *testing.T) {
 	}); err == nil {
 		t.Error("expected error on abort")
 	}
-	expectedCalls := []roachpb.Method{roachpb.BeginTransaction, roachpb.Put, roachpb.EndTransaction}
+	expectedCalls := []reflect.Type{
+		reflect.TypeOf(&roachpb.BeginTransactionRequest{}),
+		reflect.TypeOf(&roachpb.PutRequest{}),
+		reflect.TypeOf(&roachpb.EndTransactionRequest{}),
+	}
 	if !reflect.DeepEqual(expectedCalls, calls) {
 		t.Errorf("expected %s, got %s", expectedCalls, calls)
 	}
@@ -577,7 +606,7 @@ func TestRunTransactionRetryOnErrors(t *testing.T) {
 		db := NewDBWithContext(newTestSender(
 			func(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
 
-				if _, ok := ba.GetArg(roachpb.Put); ok {
+				if _, ok := ba.GetArg(&roachpb.PutRequest{}); ok {
 					count++
 					if count == 1 {
 						return nil, roachpb.NewErrorWithTxn(test.err, ba.Txn)
@@ -615,7 +644,7 @@ func TestAbortedRetryRenewsTimestamp(t *testing.T) {
 	clock := hlc.NewClock(mc.UnixNano, time.Nanosecond)
 	count := 0
 	db := NewDB(newTestSender(func(ba roachpb.BatchRequest) (*roachpb.BatchResponse, *roachpb.Error) {
-		if _, ok := ba.GetArg(roachpb.Put); ok {
+		if _, ok := ba.GetArg(&roachpb.PutRequest{}); ok {
 			mc.Increment(1)
 			count++
 			if count < 3 {

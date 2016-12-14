@@ -31,22 +31,27 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 )
 
-var allExternalMethods = [...]roachpb.Request{
-	roachpb.Get:                &roachpb.GetRequest{},
-	roachpb.Put:                &roachpb.PutRequest{},
-	roachpb.ConditionalPut:     &roachpb.ConditionalPutRequest{},
-	roachpb.Increment:          &roachpb.IncrementRequest{},
-	roachpb.Delete:             &roachpb.DeleteRequest{},
-	roachpb.DeleteRange:        &roachpb.DeleteRangeRequest{},
-	roachpb.Scan:               &roachpb.ScanRequest{},
-	roachpb.ReverseScan:        &roachpb.ReverseScanRequest{},
-	roachpb.BeginTransaction:   &roachpb.BeginTransactionRequest{},
-	roachpb.EndTransaction:     &roachpb.EndTransactionRequest{},
-	roachpb.AdminSplit:         &roachpb.AdminSplitRequest{},
-	roachpb.AdminMerge:         &roachpb.AdminMergeRequest{},
-	roachpb.AdminTransferLease: &roachpb.AdminTransferLeaseRequest{},
-	roachpb.CheckConsistency:   &roachpb.CheckConsistencyRequest{},
-	roachpb.RangeLookup:        &roachpb.RangeLookupRequest{},
+func isExternalMethod(req roachpb.Request) bool {
+	switch req.(type) {
+	case *roachpb.GetRequest:
+	case *roachpb.PutRequest:
+	case *roachpb.ConditionalPutRequest:
+	case *roachpb.IncrementRequest:
+	case *roachpb.DeleteRequest:
+	case *roachpb.DeleteRangeRequest:
+	case *roachpb.ScanRequest:
+	case *roachpb.ReverseScanRequest:
+	case *roachpb.BeginTransactionRequest:
+	case *roachpb.EndTransactionRequest:
+	case *roachpb.AdminSplitRequest:
+	case *roachpb.AdminMergeRequest:
+	case *roachpb.AdminTransferLeaseRequest:
+	case *roachpb.CheckConsistencyRequest:
+	case *roachpb.RangeLookupRequest:
+	default:
+		return false
+	}
+	return true
 }
 
 // A DBServer provides an HTTP server endpoint serving the key-value API.
@@ -137,10 +142,8 @@ func verifyRequest(ba *roachpb.BatchRequest) error {
 			}
 		}
 
-		method := req.Method()
-
-		if int(method) >= len(allExternalMethods) || allExternalMethods[method] == nil {
-			return errors.Errorf("Batch contains an internal request %s", method)
+		if !isExternalMethod(req) {
+			return errors.Errorf("Batch contains an internal request %T", req)
 		}
 	}
 	return nil

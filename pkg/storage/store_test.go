@@ -106,8 +106,8 @@ func (s *Store) testSender() client.Sender {
 func (db *testSender) Send(
 	ctx context.Context, ba roachpb.BatchRequest,
 ) (*roachpb.BatchResponse, *roachpb.Error) {
-	if et, ok := ba.GetArg(roachpb.EndTransaction); ok {
-		return nil, roachpb.NewErrorf("%s method not supported", et.Method())
+	if _, ok := ba.GetArg(&roachpb.EndTransactionRequest{}); ok {
+		return nil, roachpb.NewErrorf("%s method not supported", ba.Summary())
 	}
 	// Lookup range and direct request.
 	rs, err := keys.Range(ba)

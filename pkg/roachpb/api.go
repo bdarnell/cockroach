@@ -125,8 +125,6 @@ type Request interface {
 	Header() Span
 	// SetHeader sets the request header.
 	SetHeader(Span)
-	// Method returns the request method.
-	Method() Method
 	// ShallowCopy returns a shallow copy of the receiver.
 	ShallowCopy() Request
 	flags() int
@@ -376,96 +374,6 @@ func (ru *ResponseUnion) MustSetInner(reply Response) {
 		panic(fmt.Sprintf("%T excludes %T", ru, reply))
 	}
 }
-
-// Method implements the Request interface.
-func (*GetRequest) Method() Method { return Get }
-
-// Method implements the Request interface.
-func (*PutRequest) Method() Method { return Put }
-
-// Method implements the Request interface.
-func (*ConditionalPutRequest) Method() Method { return ConditionalPut }
-
-// Method implements the Request interface.
-func (*InitPutRequest) Method() Method { return InitPut }
-
-// Method implements the Request interface.
-func (*IncrementRequest) Method() Method { return Increment }
-
-// Method implements the Request interface.
-func (*DeleteRequest) Method() Method { return Delete }
-
-// Method implements the Request interface.
-func (*DeleteRangeRequest) Method() Method { return DeleteRange }
-
-// Method implements the Request interface.
-func (*ScanRequest) Method() Method { return Scan }
-
-// Method implements the Request interface.
-func (*ReverseScanRequest) Method() Method { return ReverseScan }
-
-// Method implements the Request interface.
-func (*CheckConsistencyRequest) Method() Method { return CheckConsistency }
-
-// Method implements the Request interface.
-func (*ChangeFrozenRequest) Method() Method { return ChangeFrozen }
-
-// Method implements the Request interface.
-func (*BeginTransactionRequest) Method() Method { return BeginTransaction }
-
-// Method implements the Request interface.
-func (*EndTransactionRequest) Method() Method { return EndTransaction }
-
-// Method implements the Request interface.
-func (*AdminSplitRequest) Method() Method { return AdminSplit }
-
-// Method implements the Request interface.
-func (*AdminMergeRequest) Method() Method { return AdminMerge }
-
-// Method implements the Request interface.
-func (*AdminTransferLeaseRequest) Method() Method { return AdminTransferLease }
-
-// Method implements the Request interface.
-func (*HeartbeatTxnRequest) Method() Method { return HeartbeatTxn }
-
-// Method implements the Request interface.
-func (*GCRequest) Method() Method { return GC }
-
-// Method implements the Request interface.
-func (*PushTxnRequest) Method() Method { return PushTxn }
-
-// Method implements the Request interface.
-func (*RangeLookupRequest) Method() Method { return RangeLookup }
-
-// Method implements the Request interface.
-func (*ResolveIntentRequest) Method() Method { return ResolveIntent }
-
-// Method implements the Request interface.
-func (*ResolveIntentRangeRequest) Method() Method { return ResolveIntentRange }
-
-// Method implements the Request interface.
-func (*NoopRequest) Method() Method { return Noop }
-
-// Method implements the Request interface.
-func (*MergeRequest) Method() Method { return Merge }
-
-// Method implements the Request interface.
-func (*TruncateLogRequest) Method() Method { return TruncateLog }
-
-// Method implements the Request interface.
-func (*RequestLeaseRequest) Method() Method { return RequestLease }
-
-// Method implements the Request interface.
-func (*TransferLeaseRequest) Method() Method { return TransferLease }
-
-// Method implements the Request interface.
-func (*LeaseInfoRequest) Method() Method { return LeaseInfo }
-
-// Method implements the Request interface.
-func (*ComputeChecksumRequest) Method() Method { return ComputeChecksum }
-
-// Method implements the Request interface.
-func (*DeprecatedVerifyChecksumRequest) Method() Method { return DeprecatedVerifyChecksum }
 
 // ShallowCopy implements the Request interface.
 func (gr *GetRequest) ShallowCopy() Request {

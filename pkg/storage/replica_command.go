@@ -166,7 +166,7 @@ func (r *Replica) executeCmd(
 		resp := reply.(*roachpb.ChangeFrozenResponse)
 		*resp, pd, err = r.ChangeFrozen(ctx, batch, ms, h, *tArgs)
 	default:
-		err = errors.Errorf("unrecognized command %s", args.Method())
+		err = errors.Errorf("unrecognized command %T", args)
 	}
 
 	// Set the ResumeSpan, NumKeys, and range info.
@@ -195,7 +195,7 @@ func (r *Replica) executeCmd(
 	// }
 
 	if log.V(2) {
-		log.Infof(ctx, "executed %s command %+v: %+v, err=%v", args.Method(), args, reply, err)
+		log.Infof(ctx, "executed %T command %+v: %+v, err=%v", args, args, reply, err)
 	}
 
 	// Create a roachpb.Error by initializing txn from the request/response header.
@@ -391,7 +391,7 @@ func (r *Replica) ReverseScan(
 
 func verifyTransaction(h roachpb.Header, args roachpb.Request) error {
 	if h.Txn == nil {
-		return errors.Errorf("no transaction specified to %s", args.Method())
+		return errors.Errorf("no transaction specified to %T", args)
 	}
 	if !bytes.Equal(args.Header().Key, h.Txn.Key) {
 		return errors.Errorf("request key %s should match txn key %s", args.Header().Key, h.Txn.Key)

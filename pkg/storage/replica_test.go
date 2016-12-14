@@ -3485,7 +3485,7 @@ func TestEndTransactionLocalGC(t *testing.T) {
 	tsc.TestingKnobs.TestingCommandFilter =
 		func(filterArgs storagebase.FilterArgs) *roachpb.Error {
 			// Make sure the direct GC path doesn't interfere with this test.
-			if filterArgs.Req.Method() == roachpb.GC {
+			if _, ok := filterArgs.Req.(*roachpb.GCRequest); ok {
 				return roachpb.NewErrorWithTxn(errors.Errorf("boom"), filterArgs.Hdr.Txn)
 			}
 			return nil
@@ -3592,9 +3592,10 @@ func TestEndTransactionResolveOnlyLocalIntents(t *testing.T) {
 	splitKey := roachpb.RKey(key).Next()
 	tsc.TestingKnobs.TestingCommandFilter =
 		func(filterArgs storagebase.FilterArgs) *roachpb.Error {
-			if filterArgs.Req.Method() == roachpb.ResolveIntent &&
-				filterArgs.Req.Header().Key.Equal(splitKey.AsRawKey()) {
-				return roachpb.NewErrorWithTxn(errors.Errorf("boom"), filterArgs.Hdr.Txn)
+			if _, ok := filterArgs.Req.(*roachpb.ResolveIntentRequest); ok {
+				if filterArgs.Req.Header().Key.Equal(splitKey.AsRawKey()) {
+					return roachpb.NewErrorWithTxn(errors.Errorf("boom"), filterArgs.Hdr.Txn)
+				}
 			}
 			return nil
 		}
@@ -3697,11 +3698,12 @@ func TestEndTransactionDirectGCFailure(t *testing.T) {
 	tsc := TestStoreConfig(nil)
 	tsc.TestingKnobs.TestingCommandFilter =
 		func(filterArgs storagebase.FilterArgs) *roachpb.Error {
-			if filterArgs.Req.Method() == roachpb.ResolveIntent &&
-				filterArgs.Req.Header().Key.Equal(splitKey.AsRawKey()) {
-				atomic.AddInt64(&count, 1)
-				return roachpb.NewErrorWithTxn(errors.Errorf("boom"), filterArgs.Hdr.Txn)
-			} else if filterArgs.Req.Method() == roachpb.GC {
+			if _, ok := filterArgs.Req.(*roachpb.ResolveIntentRequest); ok {
+				if filterArgs.Req.Header().Key.Equal(splitKey.AsRawKey()) {
+					atomic.AddInt64(&count, 1)
+					return roachpb.NewErrorWithTxn(errors.Errorf("boom"), filterArgs.Hdr.Txn)
+				}
+			} else if _, ok := filterArgs.Req.(*roachpb.GCRequest); ok {
 				t.Fatalf("unexpected GCRequest: %+v", filterArgs.Req)
 			}
 			return nil
@@ -3774,9 +3776,10 @@ func TestReplicaResolveIntentNoWait(t *testing.T) {
 	tsc := TestStoreConfig(nil)
 	tsc.TestingKnobs.TestingCommandFilter =
 		func(filterArgs storagebase.FilterArgs) *roachpb.Error {
-			if filterArgs.Req.Method() == roachpb.ResolveIntent &&
-				filterArgs.Req.Header().Key.Equal(key) {
-				atomic.StoreInt32(&seen, 1)
+			if _, ok := filterArgs.Req.(*roachpb.ResolveIntentRequest); ok {
+				if filterArgs.Req.Header().Key.Equal(key) {
+					atomic.StoreInt32(&seen, 1)
+				}
 			}
 			return nil
 		}

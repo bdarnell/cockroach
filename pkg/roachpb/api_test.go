@@ -126,8 +126,8 @@ func TestMustSetInner(t *testing.T) {
 	req.MustSetInner(&EndTransactionRequest{})
 	res.MustSetInner(&EndTransactionResponse{})
 
-	if m := req.GetInner().Method(); m != EndTransaction {
-		t.Fatalf("unexpected request: %s in %+v", m, req)
+	if _, ok := req.GetInner().(*EndTransactionRequest); !ok {
+		t.Fatalf("unexpected request: %T in %+v", req.GetInner(), req)
 	}
 	if _, isET := res.GetValue().(*EndTransactionResponse); !isET {
 		t.Fatalf("unexpected response union: %+v", res)

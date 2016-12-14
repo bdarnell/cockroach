@@ -253,8 +253,8 @@ func TestClientRetryNonTxn(t *testing.T) {
 						err = db.Put(context.TODO(), key, "value")
 					}
 					doneCall <- errors.Wrapf(
-						err, "%d: expected success on non-txn call to %s",
-						i, test.args.Method())
+						err, "%d: expected success on non-txn call to %T",
+						i, test.args)
 				}()
 				// Block until the non-transactional client has pushed us at
 				// least once.

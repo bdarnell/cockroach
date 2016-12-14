@@ -483,9 +483,12 @@ func (db *DB) prepareToSend(ba *roachpb.BatchRequest) *roachpb.Error {
 	if ba.ReadConsistency == roachpb.INCONSISTENT {
 		for _, ru := range ba.Requests {
 			req := ru.GetInner()
-			if req.Method() != roachpb.Get && req.Method() != roachpb.Scan &&
-				req.Method() != roachpb.ReverseScan {
-				return roachpb.NewErrorf("method %s not allowed with INCONSISTENT batch", req.Method)
+			switch req.(type) {
+			case *roachpb.GetRequest:
+			case *roachpb.ScanRequest:
+			case *roachpb.ReverseScanRequest:
+			default:
+				return roachpb.NewErrorf("method %T not allowed with INCONSISTENT batch", req)
 			}
 		}
 	}
