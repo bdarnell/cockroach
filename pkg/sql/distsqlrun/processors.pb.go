@@ -1819,24 +1819,7 @@ func (m *TableReaderSpec) Unmarshal(dAtA []byte) error {
 			}
 			iNdEx = postIndex
 		case 6:
-			if wireType == 0 {
-				var v uint32
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowProcessors
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= (uint32(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.OutputColumns = append(m.OutputColumns, v)
-			} else if wireType == 2 {
+			if wireType == 2 {
 				var packedLen int
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -1877,6 +1860,23 @@ func (m *TableReaderSpec) Unmarshal(dAtA []byte) error {
 					}
 					m.OutputColumns = append(m.OutputColumns, v)
 				}
+			} else if wireType == 0 {
+				var v uint32
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowProcessors
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					v |= (uint32(b) & 0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				m.OutputColumns = append(m.OutputColumns, v)
 			} else {
 				return fmt.Errorf("proto: wrong wireType = %d for field OutputColumns", wireType)
 			}
@@ -2048,24 +2048,7 @@ func (m *JoinReaderSpec) Unmarshal(dAtA []byte) error {
 			}
 			iNdEx = postIndex
 		case 4:
-			if wireType == 0 {
-				var v uint32
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowProcessors
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= (uint32(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.OutputColumns = append(m.OutputColumns, v)
-			} else if wireType == 2 {
+			if wireType == 2 {
 				var packedLen int
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -2106,6 +2089,23 @@ func (m *JoinReaderSpec) Unmarshal(dAtA []byte) error {
 					}
 					m.OutputColumns = append(m.OutputColumns, v)
 				}
+			} else if wireType == 0 {
+				var v uint32
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowProcessors
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					v |= (uint32(b) & 0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				m.OutputColumns = append(m.OutputColumns, v)
 			} else {
 				return fmt.Errorf("proto: wrong wireType = %d for field OutputColumns", wireType)
 			}
@@ -2359,67 +2359,25 @@ func (m *DistinctSpec) Unmarshal(dAtA []byte) error {
 		}
 		switch fieldNum {
 		case 1:
-			if wireType == 0 {
-				var v uint32
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowProcessors
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= (uint32(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.OrderedColumns = append(m.OrderedColumns, v)
-			} else if wireType == 2 {
-				var packedLen int
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowProcessors
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					packedLen |= (int(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				if packedLen < 0 {
-					return ErrInvalidLengthProcessors
-				}
-				postIndex := iNdEx + packedLen
-				if postIndex > l {
-					return io.ErrUnexpectedEOF
-				}
-				for iNdEx < postIndex {
-					var v uint32
-					for shift := uint(0); ; shift += 7 {
-						if shift >= 64 {
-							return ErrIntOverflowProcessors
-						}
-						if iNdEx >= l {
-							return io.ErrUnexpectedEOF
-						}
-						b := dAtA[iNdEx]
-						iNdEx++
-						v |= (uint32(b) & 0x7F) << shift
-						if b < 0x80 {
-							break
-						}
-					}
-					m.OrderedColumns = append(m.OrderedColumns, v)
-				}
-			} else {
+			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field OrderedColumns", wireType)
 			}
+			var v uint32
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowProcessors
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= (uint32(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.OrderedColumns = append(m.OrderedColumns, v)
 		default:
 			iNdEx = preIndex
 			skippy, err := skipProcessors(dAtA[iNdEx:])
@@ -2642,24 +2600,7 @@ func (m *MergeJoinerSpec) Unmarshal(dAtA []byte) error {
 				}
 			}
 		case 7:
-			if wireType == 0 {
-				var v uint32
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowProcessors
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= (uint32(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.OutputColumns = append(m.OutputColumns, v)
-			} else if wireType == 2 {
+			if wireType == 2 {
 				var packedLen int
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -2700,6 +2641,23 @@ func (m *MergeJoinerSpec) Unmarshal(dAtA []byte) error {
 					}
 					m.OutputColumns = append(m.OutputColumns, v)
 				}
+			} else if wireType == 0 {
+				var v uint32
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowProcessors
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					v |= (uint32(b) & 0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				m.OutputColumns = append(m.OutputColumns, v)
 			} else {
 				return fmt.Errorf("proto: wrong wireType = %d for field OutputColumns", wireType)
 			}
@@ -2754,24 +2712,7 @@ func (m *HashJoinerSpec) Unmarshal(dAtA []byte) error {
 		}
 		switch fieldNum {
 		case 1:
-			if wireType == 0 {
-				var v uint32
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowProcessors
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= (uint32(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.LeftEqColumns = append(m.LeftEqColumns, v)
-			} else if wireType == 2 {
+			if wireType == 2 {
 				var packedLen int
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -2812,11 +2753,7 @@ func (m *HashJoinerSpec) Unmarshal(dAtA []byte) error {
 					}
 					m.LeftEqColumns = append(m.LeftEqColumns, v)
 				}
-			} else {
-				return fmt.Errorf("proto: wrong wireType = %d for field LeftEqColumns", wireType)
-			}
-		case 2:
-			if wireType == 0 {
+			} else if wireType == 0 {
 				var v uint32
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -2832,8 +2769,12 @@ func (m *HashJoinerSpec) Unmarshal(dAtA []byte) error {
 						break
 					}
 				}
-				m.RightEqColumns = append(m.RightEqColumns, v)
-			} else if wireType == 2 {
+				m.LeftEqColumns = append(m.LeftEqColumns, v)
+			} else {
+				return fmt.Errorf("proto: wrong wireType = %d for field LeftEqColumns", wireType)
+			}
+		case 2:
+			if wireType == 2 {
 				var packedLen int
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -2874,6 +2815,23 @@ func (m *HashJoinerSpec) Unmarshal(dAtA []byte) error {
 					}
 					m.RightEqColumns = append(m.RightEqColumns, v)
 				}
+			} else if wireType == 0 {
+				var v uint32
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowProcessors
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					v |= (uint32(b) & 0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				m.RightEqColumns = append(m.RightEqColumns, v)
 			} else {
 				return fmt.Errorf("proto: wrong wireType = %d for field RightEqColumns", wireType)
 			}
@@ -2989,24 +2947,7 @@ func (m *HashJoinerSpec) Unmarshal(dAtA []byte) error {
 				}
 			}
 		case 7:
-			if wireType == 0 {
-				var v uint32
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowProcessors
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= (uint32(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.OutputColumns = append(m.OutputColumns, v)
-			} else if wireType == 2 {
+			if wireType == 2 {
 				var packedLen int
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -3047,6 +2988,23 @@ func (m *HashJoinerSpec) Unmarshal(dAtA []byte) error {
 					}
 					m.OutputColumns = append(m.OutputColumns, v)
 				}
+			} else if wireType == 0 {
+				var v uint32
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowProcessors
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					v |= (uint32(b) & 0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				m.OutputColumns = append(m.OutputColumns, v)
 			} else {
 				return fmt.Errorf("proto: wrong wireType = %d for field OutputColumns", wireType)
 			}
@@ -3132,67 +3090,25 @@ func (m *AggregatorSpec) Unmarshal(dAtA []byte) error {
 			}
 			iNdEx = postIndex
 		case 2:
-			if wireType == 0 {
-				var v uint32
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowProcessors
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= (uint32(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.GroupCols = append(m.GroupCols, v)
-			} else if wireType == 2 {
-				var packedLen int
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowProcessors
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					packedLen |= (int(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				if packedLen < 0 {
-					return ErrInvalidLengthProcessors
-				}
-				postIndex := iNdEx + packedLen
-				if postIndex > l {
-					return io.ErrUnexpectedEOF
-				}
-				for iNdEx < postIndex {
-					var v uint32
-					for shift := uint(0); ; shift += 7 {
-						if shift >= 64 {
-							return ErrIntOverflowProcessors
-						}
-						if iNdEx >= l {
-							return io.ErrUnexpectedEOF
-						}
-						b := dAtA[iNdEx]
-						iNdEx++
-						v |= (uint32(b) & 0x7F) << shift
-						if b < 0x80 {
-							break
-						}
-					}
-					m.GroupCols = append(m.GroupCols, v)
-				}
-			} else {
+			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field GroupCols", wireType)
 			}
+			var v uint32
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowProcessors
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= (uint32(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.GroupCols = append(m.GroupCols, v)
 		case 3:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Exprs", wireType)

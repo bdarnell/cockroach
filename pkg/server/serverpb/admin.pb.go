@@ -6186,24 +6186,7 @@ func (m *DrainRequest) Unmarshal(dAtA []byte) error {
 		}
 		switch fieldNum {
 		case 1:
-			if wireType == 0 {
-				var v int32
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowAdmin
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= (int32(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.On = append(m.On, v)
-			} else if wireType == 2 {
+			if wireType == 2 {
 				var packedLen int
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -6244,11 +6227,7 @@ func (m *DrainRequest) Unmarshal(dAtA []byte) error {
 					}
 					m.On = append(m.On, v)
 				}
-			} else {
-				return fmt.Errorf("proto: wrong wireType = %d for field On", wireType)
-			}
-		case 2:
-			if wireType == 0 {
+			} else if wireType == 0 {
 				var v int32
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -6264,8 +6243,12 @@ func (m *DrainRequest) Unmarshal(dAtA []byte) error {
 						break
 					}
 				}
-				m.Off = append(m.Off, v)
-			} else if wireType == 2 {
+				m.On = append(m.On, v)
+			} else {
+				return fmt.Errorf("proto: wrong wireType = %d for field On", wireType)
+			}
+		case 2:
+			if wireType == 2 {
 				var packedLen int
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -6306,6 +6289,23 @@ func (m *DrainRequest) Unmarshal(dAtA []byte) error {
 					}
 					m.Off = append(m.Off, v)
 				}
+			} else if wireType == 0 {
+				var v int32
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowAdmin
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					v |= (int32(b) & 0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				m.Off = append(m.Off, v)
 			} else {
 				return fmt.Errorf("proto: wrong wireType = %d for field Off", wireType)
 			}
@@ -6380,24 +6380,7 @@ func (m *DrainResponse) Unmarshal(dAtA []byte) error {
 		}
 		switch fieldNum {
 		case 1:
-			if wireType == 0 {
-				var v int32
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowAdmin
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= (int32(b) & 0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.On = append(m.On, v)
-			} else if wireType == 2 {
+			if wireType == 2 {
 				var packedLen int
 				for shift := uint(0); ; shift += 7 {
 					if shift >= 64 {
@@ -6438,6 +6421,23 @@ func (m *DrainResponse) Unmarshal(dAtA []byte) error {
 					}
 					m.On = append(m.On, v)
 				}
+			} else if wireType == 0 {
+				var v int32
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowAdmin
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					v |= (int32(b) & 0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				m.On = append(m.On, v)
 			} else {
 				return fmt.Errorf("proto: wrong wireType = %d for field On", wireType)
 			}
