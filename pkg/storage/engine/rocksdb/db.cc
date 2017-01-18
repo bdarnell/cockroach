@@ -1525,6 +1525,9 @@ DBStatus DBOpen(DBEngine **db, DBSlice dir, DBOptions db_opts) {
   // Use the rocksdb options builder to configure the base options
   // using our memtable budget.
   rocksdb::Options options;
+
+  options.paranoid_file_checks = true;
+
   // Increase parallelism for compactions based on the number of
   // cpus. This will use 1 high priority thread for flushes and
   // num_cpu-1 low priority threads for compactions. Always use at
@@ -1607,7 +1610,7 @@ DBStatus DBOpen(DBEngine **db, DBSlice dir, DBOptions db_opts) {
   // Follow the RocksDB recommendation to configure the size of L1 to
   // be the same as the estimated size of L0.
   options.max_bytes_for_level_base = 16 << 20; // 16 MB
-  options.max_bytes_for_level_multiplier = 10;
+  options.max_bytes_for_level_multiplier = 4;
   // Target the base file size as 1/4 of the base size which will give
   // us ~4 files in the base level (level 0). Each additional level
   // grows the file size by 2. If max_bytes_for_level_base is 16 MB,
