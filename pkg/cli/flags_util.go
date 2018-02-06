@@ -16,6 +16,7 @@ package cli
 
 import (
 	"context"
+	enc_hex "encoding/hex"
 	"fmt"
 	"math"
 	"strconv"
@@ -136,6 +137,22 @@ func (k *mvccKey) Set(value string) error {
 			return err
 		}
 		*k = mvccKey(engine.MakeMVCCMetadataKey(keys.MakeRangeIDPrefix(fromID)))
+	case hex:
+		// rocksdb debug commands print keys in hex with "0x" prepended.
+		if strings.ToLower(keyStr[:2]) == "0x" {
+			keyStr = keyStr[2:]
+		}
+		decoded, err := enc_hex.DecodeString(keyStr)
+		if err != nil {
+			return err
+		}
+		// Note that hex format is expected to include the timestamp,
+		// unlike the ones above that use MakeMVCCMetadataKey.
+		key, err := engine.DecodeKey(decoded)
+		if err != nil {
+			return err
+		}
+		*k = mvccKey(key)
 	default:
 		return fmt.Errorf("unknown key type %s", typ)
 	}
@@ -160,6 +177,7 @@ const (
 	raw keyType = iota
 	human
 	rangeID
+	hex
 )
 
 // _keyTypes stores the names of all the possible key types.

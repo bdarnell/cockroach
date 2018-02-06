@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/cli/synctest"
 	"github.com/cockroachdb/cockroach/pkg/config"
@@ -52,6 +53,14 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
+
+// #cgo CPPFLAGS: -I ../../c-deps/libroach/include
+// #cgo LDFLAGS: -lroach
+// #cgo LDFLAGS: -lrocksdb -lprotobuf -lsnappy
+//
+// #include <stdlib.h>
+// #include <libroach.h>
+import "C"
 
 var debugKeysCmd = &cobra.Command{
 	Use:   "keys [directory]",
@@ -1014,6 +1023,117 @@ func runDebugSyncTest(cmd *cobra.Command, args []string) error {
 	return synctest.Run(syncTestOpts)
 }
 
+var debugDecodeKeyCmd = &cobra.Command{
+	Use:   "decode-key [encoded string]",
+	Short: "Decode and pretty-print a key",
+	Long: `
+`,
+	RunE: runDebugDecodeKey,
+}
+
+func runDebugDecodeKey(cmd *cobra.Command, args []string) error {
+
+	for _, arg := range args {
+		var k mvccKey
+		if err := k.Set(arg); err != nil {
+			return err
+		}
+		fmt.Println(k)
+	}
+	return nil
+}
+
+const (
+	maxArrayLen = 1<<50 - 1
+)
+
+func goToCSlice(b []byte) C.DBSlice {
+	if len(b) == 0 {
+		return C.DBSlice{data: nil, len: 0}
+	}
+	return C.DBSlice{
+		data: (*C.char)(unsafe.Pointer(&b[0])),
+		len:  C.int(len(b)),
+	}
+}
+
+func cStringToGoString(s C.DBString) string {
+	if s.data == nil {
+		return ""
+	}
+	result := C.GoStringN(s.data, s.len)
+	C.free(unsafe.Pointer(s.data))
+	return result
+}
+
+func cStringToGoBytes(s C.DBString) []byte {
+	if s.data == nil {
+		return nil
+	}
+	result := C.GoBytes(unsafe.Pointer(s.data), s.len)
+	C.free(unsafe.Pointer(s.data))
+	return result
+}
+
+var debugDumpWALCmd = &cobra.Command{
+	Use:   "dump-wal [filename]",
+	Short: "Decode and pretty-print a rocksdb WAL file",
+	Long: `
+Cockroach-aware version of 'cockroach debug rocksdb dump_wal'.
+`,
+	RunE: runDebugDumpWAL,
+}
+
+func runDebugDumpWAL(cmd *cobra.Command, args []string) error {
+	for _, arg := range args {
+		var buf C.DBString
+		status := C.DBReadWALFile(goToCSlice([]byte(arg)), &buf)
+		if status.data != nil {
+			return errors.New(cStringToGoString(status))
+		}
+		data := cStringToGoBytes(buf)
+		reader, err := engine.NewRocksDBBatchReader(data)
+		if err != nil {
+			return err
+		}
+		for i := 0; reader.Next(); i++ {
+			fmt.Println(len(reader.Value()))
+			entryReader, err := engine.NewRocksDBBatchReader(reader.Value())
+			if err != nil {
+				return err
+			}
+			for j := 0; entryReader.Next(); j++ {
+				mvccKey, err := entryReader.MVCCKey()
+				if err != nil {
+					return err
+				}
+				switch entryReader.BatchType() {
+				case engine.BatchTypeDeletion:
+					fmt.Printf("%d,%d: DEL %s\n", i, j, mvccKey)
+				case engine.BatchTypeValue:
+					prettyValue, err := tryRangeIDKey(engine.MVCCKeyValue{Key: mvccKey, Value: entryReader.Value()})
+					if err != nil {
+						prettyValue = fmt.Sprintf("[%d bytes]", len(entryReader.Value()))
+					}
+					fmt.Printf("%d,%d: PUT %s: %s\n", i, j, mvccKey, prettyValue)
+				case engine.BatchTypeMerge:
+					fmt.Printf("%d,%d: MERGE %s: [%d bytes]\n", i, j, mvccKey, len(entryReader.Value()))
+				default:
+					fmt.Printf("%d,%d: UNSUPPORTED %v\n", i, j, entryReader.BatchType())
+				}
+			}
+			if entryReader.Error() != nil {
+				return entryReader.Error()
+			}
+			fmt.Println()
+		}
+		if reader.Error() != nil {
+			return reader.Error()
+		}
+	}
+	return nil
+}
+
 func init() {
 	debugCmd.AddCommand(debugCmds...)
 
@@ -1040,6 +1160,8 @@ var debugCmds = []*cobra.Command{
 	debugSyncTestCmd,
 	debugEnvCmd,
 	debugZipCmd,
+	debugDecodeKeyCmd,
+	debugDumpWALCmd,
 }
 
 var debugCmd = &cobra.Command{

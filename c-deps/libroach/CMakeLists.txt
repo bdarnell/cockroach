@@ -27,6 +27,7 @@ add_library(roach
   chunked_buffer.cc
   comparator.cc
   db.cc
+  debug.cc
   encoding.cc
   engine.cc
   env_switching.cc
@@ -55,6 +56,7 @@ target_include_directories(roach
   PRIVATE ../protobuf/src
   PRIVATE ../rocksdb/include
   PRIVATE protos
+  PRIVATE ../rocksdb
 )
 
 add_library(roachccl
@@ -77,7 +79,7 @@ set_target_properties(roach roachccl PROPERTIES
   CXX_STANDARD 11
   CXX_STANDARD_REQUIRED YES
   CXX_EXTENSIONS NO
-  COMPILE_OPTIONS "-Werror;-Wall;-Wno-sign-compare"
+  COMPILE_OPTIONS "-Werror;-Wall;-Wno-sign-compare;-DROCKSDB_PLATFORM_POSIX;-DOS_MACOSX"
 )
 
 enable_testing()

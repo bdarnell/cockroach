@@ -360,7 +360,7 @@ func rocksDBBatchDecodeHeader(repr []byte) (count int, orepr []byte, err error) 
 	}
 	seq := binary.LittleEndian.Uint64(repr[:countPos])
 	if seq != 0 {
-		return 0, nil, errors.Errorf("bad sequence: expected 0, but found %d", seq)
+		//return 0, nil, errors.Errorf("bad sequence: expected 0, but found %d", seq)
 	}
 	count = int(binary.LittleEndian.Uint32(repr[countPos:headerSize]))
 	return count, repr[headerSize:], nil
@@ -378,8 +378,9 @@ func rocksDBBatchVarString(repr []byte) (s []byte, orepr []byte, err error) {
 		return nil, nil, nil
 	}
 	if v > uint64(len(repr)) {
-		return nil, nil, fmt.Errorf("malformed varstring, expected %d bytes, but only %d remaining",
-			v, len(repr))
+		//return nil, nil, fmt.Errorf("malformed varstring, expected %d bytes, but only %d remaining",
+		//	v, len(repr))
+		v = uint64(len(repr))
 	}
 	return repr[:v], repr[v:], nil
 }
@@ -477,7 +478,7 @@ func (r *RocksDBBatchReader) Next() bool {
 	r.offset++
 	if len(r.repr) == 0 {
 		if r.offset < r.count {
-			r.err = errors.Errorf("invalid batch: expected %d entries but found %d", r.count, r.offset)
+			//r.err = errors.Errorf("invalid batch: expected %d entries but found %d", r.count, r.offset)
 		}
 		return false
 	}

@@ -350,6 +350,9 @@ DBStatus DBLockFile(DBSlice filename, DBFileLock* lock);
 // the lock.
 DBStatus DBUnlockFile(DBFileLock lock);
 
+// DBReadWALFile reads the given WAL file, producing a sequence of serialized WriteBatches in *buf.
+DBStatus DBReadWALFile(DBSlice filename, DBString* buf);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif
