@@ -27,6 +27,7 @@ func registerTests(r *registry) {
 	registerCDC(r)
 	registerClearRange(r)
 	registerClock(r)
+	registerConsistencySplit(r)
 	registerCopy(r)
 	registerDebug(r)
 	registerDebugHeap(r)
