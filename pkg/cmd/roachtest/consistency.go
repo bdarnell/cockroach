@@ -17,7 +17,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 
+	"github.com/cockroachdb/cockroach-go/crdb"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/pkg/errors"
 )
@@ -141,7 +143,12 @@ func registerConsistencySplit(r *registry) {
 				mu.Lock()
 				writeStatus[i] = writePending
 				mu.Unlock()
-				_, err := db.ExecContext(taskCtx, "UPDATE d.t SET v = $1 WHERE k = $2", i, key)
+
+				err := crdb.ExecuteTx(taskCtx, db, nil, func(tx *sql.Tx) error {
+					_, err := tx.ExecContext(taskCtx, "UPDATE d.t SET v = $1 WHERE k = $2", i, key)
+					return err
+				})
+				//_, err := db.ExecContext(taskCtx, "UPDATE d.t SET v = $1 WHERE k = $2", i, key)
 				mu.Lock()
 				if err == nil {
 					writeStatus[i] = writeSuccess
