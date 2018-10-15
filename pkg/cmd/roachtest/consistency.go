@@ -17,9 +17,8 @@ package main
 
 import (
 	"context"
-	"database/sql"
+	"fmt"
 
-	"github.com/cockroachdb/cockroach-go/crdb"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/pkg/errors"
 )
@@ -104,7 +103,8 @@ func registerConsistencySplit(r *registry) {
 					}
 
 					if i < lastRead {
-						readErrCh <- errors.Errorf("read value regressed from %d to %d", lastRead, i)
+						// readErrCh <- errors.Errorf("read value regressed from %d to %d", lastRead, i)
+						// return
 					}
 
 					mu.Lock()
@@ -136,42 +136,96 @@ func registerConsistencySplit(r *registry) {
 				readErrCh <- nil
 			}()
 
+			const numWriters = 2
+			writeQueue := make(chan int, numWriters)
+			writeErrCh := make(chan error, numWriters)
+			writeAttempts := 0
+			for i := 0; i < numWriters; i++ {
+				go func() {
+					for i := range writeQueue {
+						mu.Lock()
+						writeStatus[i] = writePending
+						mu.Unlock()
+
+						// err := crdb.ExecuteTx(taskCtx, db, nil, func(tx *sql.Tx) error {
+						// 	writeAttempts++
+						// 	rows, err := tx.QueryContext(taskCtx, "SELECT * FROM d.t WHERE k = $1", key)
+						// 	if err != nil {
+						// 		return err
+						// 	}
+						// 	err = rows.Close()
+						// 	if err != nil {
+						// 		return err
+						// 	}
+						// 	_, err = tx.ExecContext(taskCtx, "UPDATE d.t SET v = $1 WHERE k = $2", i, key)
+						// 	return err
+						// })
+
+						_, err := db.ExecContext(taskCtx, "UPDATE d.t SET v = $1 WHERE k = $2", i, key)
+
+						// tx, err := db.BeginTx(taskCtx, nil)
+						// if err == nil {
+						// 	_, err := tx.ExecContext(taskCtx, "update d.t set v =$1 where k=$2", i, key)
+						// 	if err == nil {
+						// 		err = tx.Commit()
+						// 	} else {
+						// 		_ = tx.Rollback()
+						// 	}
+						// }
+
+						mu.Lock()
+						if err == nil {
+							writeStatus[i] = writeSuccess
+						} else {
+							if writeStatus[i] == writeSuccess {
+								writeErrCh <- errors.Errorf("got unambigous failure writing %d after value was read", i)
+								mu.Unlock()
+								return
+							}
+							c.l.Printf("write failed: %s\n", err)
+							writeStatus[i] = writeFailed
+						}
+						mu.Unlock()
+
+						if taskCtx.Err() != nil {
+							break
+						}
+					}
+					writeErrCh <- nil
+				}()
+			}
+
 			for i := 0; i < numWrites; i++ {
-				if i%1000 == 0 {
+				if i%100 == 0 {
 					t.Status("writing ", i)
 				}
-				mu.Lock()
-				writeStatus[i] = writePending
-				mu.Unlock()
-
-				err := crdb.ExecuteTx(taskCtx, db, nil, func(tx *sql.Tx) error {
-					_, err := tx.ExecContext(taskCtx, "UPDATE d.t SET v = $1 WHERE k = $2", i, key)
-					return err
-				})
-				//_, err := db.ExecContext(taskCtx, "UPDATE d.t SET v = $1 WHERE k = $2", i, key)
-				mu.Lock()
-				if err == nil {
-					writeStatus[i] = writeSuccess
-				} else {
-					if writeStatus[i] == writeSuccess {
-						t.Fatalf("got unambigous failure writing %d after value was read", i)
-					}
-					writeStatus[i] = writeFailed
+				select {
+				case writeQueue <- i:
+				case err := <-writeErrCh:
+					writeErrCh <- err
+					break
 				}
-				mu.Unlock()
 			}
-			t.Status("finished writes")
+			close(writeQueue)
+
+			var errMsg string
+			t.Status("waiting for write goroutines")
+			for i := 0; i < numWriters; i++ {
+				if err := <-writeErrCh; err != nil {
+					errMsg += fmt.Sprintf("write failed: %s\n", err)
+				}
+			}
 
 			taskCancel()
 			taskCancel = nil
 
 			t.Status("waiting for split goroutine")
 			if err := <-splitErrCh; err != nil {
-				t.Fatalf("split failed: %s", err)
+				errMsg += fmt.Sprintf("split failed: %s\n", err)
 			}
 			t.Status("waiting for read goroutine")
 			if err := <-readErrCh; err != nil {
-				t.Fatalf("read failed: %s", err)
+				errMsg += fmt.Sprintf("read failed: %s\n", err)
 			}
 
 			c.l.Printf("performed %d writes, %d reads, and %d splits\n", numWrites, numReads, numSplits)
@@ -180,10 +234,14 @@ func registerConsistencySplit(r *registry) {
 			for _, v := range writeStatus {
 				counts[v]++
 			}
-			c.l.Printf("write status: %d success, %d failure, %d ambiguous, %d pending, %d not started\n",
+			c.l.Printf("write status: %d success, %d failure, %d ambiguous, %d pending, %d not started, %d attempts\n",
 				counts[writeSuccess], counts[writeFailed], counts[writeAmbiguous], counts[writePending],
-				counts[writeNotStarted])
+				counts[writeNotStarted], writeAttempts)
 			t.Status("shutting down")
+
+			if errMsg != "" {
+				t.Fatal(errMsg)
+			}
 		},
 	})
 }
